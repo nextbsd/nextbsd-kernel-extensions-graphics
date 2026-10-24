@@ -1989,6 +1989,18 @@ jobs:
           files: |
             out/*.tar.gz
 
+      # The NVIDIA kexts now build in nextbsd-kernel-extensions-nvidia, against the
+      # drm.ko in the graphics-kexts-amd64.tar.gz just published (nextbsd/nextbsd#547).
+      # Tell it there is a new graphics build: kernel -> graphics -> NVIDIA.
+      - name: Trigger the NVIDIA kext build
+        run: |
+          gh api repos/nextbsd/nextbsd-kernel-extensions-nvidia/dispatches \
+            -f event_type=graphics-updated \
+            -f "client_payload[fbsd_sha]=${{ github.event.client_payload.fbsd_sha || inputs.fbsd_sha }}" \
+            -f "client_payload[sha]=${{ github.sha }}"
+        env:
+          GH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
+
   # EXPERIMENTAL (NVIDIA kext series, step 2 / nextbsd#384): prove NVIDIA's
   # closed-source kmods BUILD against our patched 15.1 kernel obj before wrapping
   # them into a NVIDIAGraphics kext. Mirrors the drm-kmod job (same container,

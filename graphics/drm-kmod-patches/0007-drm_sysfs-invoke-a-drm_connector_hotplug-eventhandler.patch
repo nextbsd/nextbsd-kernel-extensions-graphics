@@ -1,0 +1,93 @@
+drm_sysfs: invoke a drm_connector_hotplug eventhandler next to devctl
+
+drm_sysfs_hotplug_event(), drm_sysfs_connector_hotplug_event() and
+drm_sysfs_connector_property_event() report connector changes only through
+devctl_notify("DRM", "CONNECTOR", "HOTPLUG", ...). NextBSD has no devd, so
+those notifications reach no one: the WindowServer can't see a display
+being plugged in, and neither can XLibre's udev_kms RandR hotplug.
+
+Invoke a drm_connector_hotplug eventhandler right after each devctl_notify,
+passing the newbus device the driver attached to (dev->dev->bsddev, the
+drmn child for the PCI drivers), the primary minor's name ("card0"), the
+connector id (0 for a whole-device event) and the property id (0 for a
+connection change). The kernel's IORegistry subscribes and turns each event
+into a kIOMessageServicePropertyChange interest notification on that
+device's registry entry (nextbsd/nextbsd-kernel#338,
+sys/dev/iokit/iokit_drm.c).
+
+EVENTHANDLER_INVOKE looks the list up by name at run time, so drm.ko links
+nothing new and the invoke is a no-op on a kernel with no subscriber. The
+declaration is repeated here instead of coming from a kernel header because
+this build applies the kernel's patches/series but not its src-overlay; both
+sides spell out the same signature. devctl_notify is left as it is.
+
+Refs nextbsd/nextbsd-kernel#338.
+
+--- a/drivers/gpu/drm/drm_sysfs.c
++++ b/drivers/gpu/drm/drm_sysfs.c
+@@ -24,6 +24,8 @@
+  *
+  */
+ 
++#include <sys/eventhandler.h>
++
+ #include <linux/device.h>
+ #include <linux/err.h>
+ 
+@@ -49,6 +51,32 @@ static struct device_type drm_sysfs_device_connector = {
+ 
+ struct class *drm_class;
+ 
++/*
++ * NextBSD: connector changes also go to the drm_connector_hotplug
++ * eventhandler, which the kernel's IORegistry turns into IOKit interest
++ * notifications (nextbsd/nextbsd-kernel#338). The list is found by name at
++ * run time, so nothing here links against the kernel side and the invoke is
++ * a no-op on a kernel without a subscriber. The signature is a contract with
++ * sys/dev/iokit/iokit_drm.c; keep the two identical.
++ *
++ *   dev           the newbus device the driver attached to (dev->dev->bsddev)
++ *   cdev          the primary minor's name, "card0"
++ *   connector_id  connector object id, 0 for the whole device
++ *   property_id   property object id, 0 for a connection change
++ */
++typedef void (*drm_connector_hotplug_fn)(void *, device_t, const char *,
++    uint32_t, uint32_t);
++EVENTHANDLER_DECLARE(drm_connector_hotplug, drm_connector_hotplug_fn);
++
++static void
++drm_sysfs_hotplug_notify(struct drm_device *dev, uint32_t connector_id,
++    uint32_t property_id)
++{
++	EVENTHANDLER_INVOKE(drm_connector_hotplug,
++	    dev->dev != NULL ? dev->dev->bsddev : NULL,
++	    dev_name(dev->primary->kdev), connector_id, property_id);
++}
++
+ static char *drm_devnode(struct device *dev, umode_t *mode)
+ {
+ 	return kasprintf(GFP_KERNEL, "dri/%s", dev_name(dev));
+@@ -83,6 +111,7 @@ void drm_sysfs_hotplug_event(struct drm_device *dev)
+ 	sbuf_finish(sb);
+ 	devctl_notify("DRM", "CONNECTOR", "HOTPLUG", sbuf_data(sb));
+ 	sbuf_delete(sb);
++	drm_sysfs_hotplug_notify(dev, 0, 0);
+ }
+ 
+ void drm_sysfs_connector_hotplug_event(struct drm_connector *connector)
+@@ -99,6 +128,7 @@ void drm_sysfs_connector_hotplug_event(struct drm_connector *connector)
+ 	sbuf_finish(sb);
+ 	devctl_notify("DRM", "CONNECTOR", "HOTPLUG", sbuf_data(sb));
+ 	sbuf_delete(sb);
++	drm_sysfs_hotplug_notify(dev, connector->base.id, 0);
+ }
+ 
+ void drm_sysfs_connector_property_event(struct drm_connector *connector,
+@@ -117,6 +147,7 @@ void drm_sysfs_connector_property_event(struct drm_connector *connector,
+ 	sbuf_finish(sb);
+ 	devctl_notify("DRM", "CONNECTOR", "HOTPLUG", sbuf_data(sb));
+ 	sbuf_delete(sb);
++	drm_sysfs_hotplug_notify(dev, connector->base.id, property->base.id);
+ }
+ 
+ static void drm_sysfs_release(struct device *dev)

@@ -25,15 +25,15 @@ Refs nextbsd/nextbsd-kernel#338.
 
 --- a/drivers/gpu/drm/drm_sysfs.c
 +++ b/drivers/gpu/drm/drm_sysfs.c
-@@ -24,6 +24,8 @@
-  *
-  */
+@@ -37,6 +37,8 @@
+ #include "drm_internal.h"
+ #include "drm_crtc_internal.h"
  
 +#include <sys/eventhandler.h>
 +
- #include <linux/device.h>
- #include <linux/err.h>
+ #define to_drm_connector(d) dev_get_drvdata(d)
  
+ static struct device_type drm_sysfs_device_minor = {
 @@ -49,6 +51,32 @@ static struct device_type drm_sysfs_device_connector = {
  
  struct class *drm_class;

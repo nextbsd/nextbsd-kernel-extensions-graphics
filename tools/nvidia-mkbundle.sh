@@ -9,7 +9,7 @@
 # is version-locked to its kernel module and its fixed-name entry points collide
 # (nvidia_drv.so, the .so.0/.so.1 sonames, the vendor JSONs). Giving each branch its
 # own bundle dir makes them co-exist on disk (like the kexts); nvidia-activate.sh then
-# wires exactly one branch into the canonical /usr/local paths so X/ld.so/GLVND find it.
+# wires exactly one branch into the canonical /usr/X11 paths so X/ld.so/GLVND find it.
 #
 # NO COMPILE: the userland ships as precompiled blobs in the tarball's obj/ tree
 # (verified 595.84: obj/ holds the 64-bit sonamed .so files as real files, plus the
@@ -66,74 +66,51 @@ for so in libGLX_nvidia.so.0 libEGL_nvidia.so.0 \
     ln -sf "$so" "$R/lib/${so%.so.*}.so"           # libFoo.so -> libFoo.so.N
   else echo "  skip(absent): $so"; fi
 done
-# Mesa's libgbm dlopen's lib<drmdriver>_gbm.so — for nvidia-drm that's the allocator
+# Mesa's libgbm dlopen's <gbm-backends-path>/<drmdriver>_gbm.so — for nvidia-drm that's
+# the allocator. nvidia-activate.sh links it into /usr/X11/lib/gbm, NextBSD-mesa's path.
 ln -sf ../libnvidia-allocator.so.1 "$R/lib/gbm/nvidia-drm_gbm.so"
 
-# --- Mesa's libgbm.so.1 loader (Resources/lib) ---
-# WHY A MESA LIB LIVES IN THE NVIDIA BUNDLE: libnvidia-egl-gbm.so.1 — the EGL-on-GBM
-# external platform, used by any KMS/GBM compositor (Wayland, and our own WindowServer)
-# — DT_NEEDs libgbm.so.1. Ship it and pkg(8) records it as shlibs_provided; omit it and
-# pkg records an unsatisfied shlibs_required and resolves it to mesa-libs, which carries
-# libgallium, which NEEDs libLLVM.so.19.1 — a library FreeBSD only ships inside the
-# 1.9 GB llvm19 TOOLCHAIN package. That is how a *kernel-extensions* package came to
-# hard-depend on LLVM and pushed the base image past GitHub's 2 GiB asset cap.
-#
-# The loader is LLVM-free by construction. Measured DT_NEEDED on Mesa 26.1.4:
-#     libgbm.so.1     14 KB   libdrm.so.2, libthr.so.3, libc.so.7            <- no LLVM
-#     gbm/dri_gbm.so 120 KB   libgallium-26.1.4.so -> libLLVM.so.19.1        <- never shipped
-# The LLVM lives in Mesa's *backend*, not in the loader. On nvidia-drm the backend is
-# nvidia-drm_gbm.so -> libnvidia-allocator.so.1 (symlinked just above), so Mesa's
-# gallium/LLVM path is never loaded at all. Mesa is MIT — redistribution is fine.
-#
-# Source: $NVBUNDLE_LIBGBM (CI extracts it from the mesa-libs package), else the build
-# host's own /usr/local/lib/libgbm.so.1 on FreeBSD.
-LIBGBM="${NVBUNDLE_LIBGBM:-/usr/local/lib/libgbm.so.1}"
-if [ -f "$R/lib/libnvidia-egl-gbm.so.1" ]; then
-  [ -f "$LIBGBM" ] || {
-    echo "FAIL: libgbm.so.1 not found (looked for: $LIBGBM)" >&2
-    echo "  libnvidia-egl-gbm.so.1 DT_NEEDs it. Without it in the bundle, pkg(8) resolves" >&2
-    echo "  libgbm.so.1 to mesa-libs and drags llvm19 (1.9 GB installed) into the image." >&2
-    echo "  Set NVBUNDLE_LIBGBM=<path to libgbm.so.1>, or drop libnvidia-egl-gbm from the" >&2
-    echo "  copy list above (which also drops the EGL-on-GBM platform). See nextbsd#388." >&2
-    exit 1
-  }
-  cp "$LIBGBM" "$R/lib/libgbm.so.1"                 # cp dereferences: real file, SONAME-named
-  ln -sf libgbm.so.1 "$R/lib/libgbm.so"
-  echo "  bundled Mesa libgbm.so.1 loader from $LIBGBM"
-fi
+# --- libgbm.so.1 is NOT in the bundle: it comes from NextBSD-mesa (/usr/X11/lib) ---
+# libnvidia-egl-gbm.so.1 (the EGL-on-GBM external platform) is the only bundle lib
+# that DT_NEEDs libgbm.so.1. The bundle used to carry a copy of FreeBSD mesa-libs'
+# loader so pkg(8) recorded it as shlibs_provided and added no mesa-libs -> llvm19
+# edge (nextbsd-kernel-extensions#26, nextbsd#388). NextBSD now ships its own Mesa
+# in base, NextBSD-mesa, with /usr/X11/lib/libgbm.so.1 and LLVM linked statically
+# (E23 D3), so the copy goes (E23 D15, nextbsd-kernel-extensions-nvidia#2):
+#   - nextbsd-pkg lists libgbm.so.1 in NextBSD-kernel-extensions'
+#     shlibs_required_ignore, like libX11/libXext/libdrm, so neither that package
+#     nor NextBSD-everything gains a dependency on NextBSD-mesa (optional, base).
+#   - Without NextBSD-mesa, nothing loads libnvidia-egl-gbm; the kexts, console
+#     and X-less display are unaffected (kext loading never touches userland).
+#   - With NextBSD-mesa, rtld resolves libgbm.so.1 from /usr/X11/lib, and Mesa's
+#     loader finds NVIDIA's backend at /usr/X11/lib/gbm/nvidia-drm_gbm.so (its
+#     -Dgbm-backends-path), which nvidia-activate.sh links there.
+#   - The only libgbm.so.1 on the system is NextBSD-mesa's, so there is no
+#     shared file path for pkg to "resolve" by deinstalling this package
+#     (nextbsd-kernel-extensions#27).
 
-# --- closure self-check: every lib our own binaries NEED that must come from INSIDE the
-# --- bundle (NVIDIA's own libs, plus Mesa's libgbm loader) has to actually be here ---
-# Guards the bug class above: a dangling NEEDED silently turns into a pkg(8) dependency —
-# on FreeBSD's nvidia-driver for a libnvidia-*, or on mesa-libs -> llvm19 for libgbm.
-# Fails the build loudly instead.
+# --- closure self-check: every NVIDIA lib our own binaries NEED has to be here, and
+# --- libgbm must NOT be (that copy is exactly what was removed above) ---
+# Guards the bug class above: a dangling NEEDED on a libnvidia-* silently turns into
+# a pkg(8) dependency on FreeBSD's nvidia-driver. Fails the build loudly instead.
+[ ! -e "$R/lib/libgbm.so.1" ] && [ ! -e "$R/lib/libgbm.so" ] \
+  || { echo "FAIL: the bundle must not carry libgbm (NextBSD-mesa provides it)" >&2; exit 1; }
 if command -v readelf >/dev/null 2>&1; then
   MISS=""
   for f in "$R"/xorg/drivers/*.so "$R"/xorg/extensions/*.so.1 "$R"/lib/*.so.*; do
     [ -f "$f" ] || continue
     for n in $(readelf -d "$f" 2>/dev/null | sed -n 's/.*NEEDED.*\[\(lib[^]]*\)\].*/\1/p'); do
       case "$n" in
-        *nvidia*|libgbm.so.*) [ -e "$R/lib/$n" ] || MISS="$MISS $(basename "$f")->$n" ;;
+        *nvidia*) [ -e "$R/lib/$n" ] || MISS="$MISS $(basename "$f")->$n" ;;
       esac
     done
   done
   if [ -n "$MISS" ]; then
     echo "FAIL: bundle missing libs its own binaries NEED:$MISS" >&2
-    echo "  pkg(8) would resolve these to nvidia-driver / mesa-libs and pull them in as deps" >&2
+    echo "  pkg(8) would resolve these to nvidia-driver and pull it in as a dep" >&2
     exit 1
   fi
-  echo "  bundle lib closure OK (no dangling NEEDED)"
-
-  # The bundled loader must STAY LLVM-free. If a future Mesa fuses gallium into
-  # libgbm itself, bundling it would silently re-introduce the very edge we removed.
-  if [ -f "$R/lib/libgbm.so.1" ]; then
-    if readelf -d "$R/lib/libgbm.so.1" | grep -qE 'NEEDED.*(gallium|LLVM)'; then
-      echo "FAIL: bundled libgbm.so.1 NEEDs gallium/LLVM — avoiding that is the whole point" >&2
-      readelf -d "$R/lib/libgbm.so.1" | sed -n 's/.*(NEEDED).*\[\(.*\)\].*/    NEEDED \1/p' >&2
-      exit 1
-    fi
-    echo "  bundled libgbm.so.1 is LLVM-free (no gallium/libLLVM in NEEDED)"
-  fi
+  echo "  bundle lib closure OK (no dangling NVIDIA NEEDED; libgbm left to NextBSD-mesa)"
 else
   echo "  WARN: no readelf — skipping bundle lib closure check" >&2
 fi

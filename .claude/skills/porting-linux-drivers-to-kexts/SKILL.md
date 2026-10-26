@@ -190,7 +190,7 @@ GPL-2.0-**only**. Crossing that line is a project decision, not a technical one.
 ## Iteration loop
 
 CI is ~25 min. For kernel work, build locally instead: the toolchain container
-(`ghcr.io/nextbsd/nextbsd-kernel-toolchain:amd64-latest`) plus the kernel
+(`ghcr.io/nextbsd/nextbsd-toolchain:amd64-latest`) plus the kernel
 obj from nextbsd-kernel's `continuous` release reproduces the CI build in ~5 min.
 Check the kernel-obj timestamp matches your test VM's `uname -r`, or the kext
 will not be KBI-compatible.

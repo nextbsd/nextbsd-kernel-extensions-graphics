@@ -105,7 +105,7 @@ jobs:
     container:
       # Same per-arch toolchain image the kernel was built in, so module source
       # matches. Cross-builds on the x86_64 runner (no emulation).
-      image: ghcr.io/nextbsd/nextbsd-kernel-toolchain:${{ matrix.target }}-${{ (github.event.client_payload.fbsd_sha || inputs.fbsd_sha) && format('fbsd-{0}', github.event.client_payload.fbsd_sha || inputs.fbsd_sha) || 'latest' }}
+      image: ghcr.io/nextbsd/nextbsd-toolchain:${{ matrix.target }}-${{ (github.event.client_payload.fbsd_sha || inputs.fbsd_sha) && format('fbsd-{0}', github.event.client_payload.fbsd_sha || inputs.fbsd_sha) || 'latest' }}
     steps:
       - name: Download kernel obj tree from kernel continuous release
         env:
@@ -257,7 +257,7 @@ jobs:
           - target: arm64
             target_arch: aarch64
     container:
-      image: ghcr.io/nextbsd/nextbsd-kernel-toolchain:${{ matrix.target }}-${{ (github.event.client_payload.fbsd_sha || inputs.fbsd_sha) && format('fbsd-{0}', github.event.client_payload.fbsd_sha || inputs.fbsd_sha) || 'latest' }}
+      image: ghcr.io/nextbsd/nextbsd-toolchain:${{ matrix.target }}-${{ (github.event.client_payload.fbsd_sha || inputs.fbsd_sha) && format('fbsd-{0}', github.event.client_payload.fbsd_sha || inputs.fbsd_sha) || 'latest' }}
     steps:
       - name: Download kernel obj tree from kernel continuous release
         env:
@@ -1592,7 +1592,7 @@ jobs:
           - target: amd64
             runner: ubuntu-24.04
           # arm64 assembles on an x86 runner too: the per-arch
-          # kernel-toolchain images are x86_64 containers carrying an
+          # nextbsd-toolchain images are x86_64 containers carrying an
           # aarch64 CROSS toolchain (the same image the userland lane uses),
           # so they cannot run -- or even pull -- on an ARM runner. Only the
           # kext-boot job below goes native-ARM (to KVM-boot the aarch64
@@ -1603,9 +1603,9 @@ jobs:
     container:
       # The shared assembly host-builds makefs/mkimg/pwd_mkdb/cap_mkdb from
       # /usr/src via the cross toolchain when they are not on PATH; the
-      # kernel-toolchain image provides both (same image the userland lane
+      # nextbsd-toolchain image provides both (same image the userland lane
       # assembles in).
-      image: ghcr.io/nextbsd/nextbsd-kernel-toolchain:${{ matrix.target }}-latest
+      image: ghcr.io/nextbsd/nextbsd-toolchain:${{ matrix.target }}-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -2011,7 +2011,7 @@ jobs:
     needs: drm-kmod
     runs-on: ubuntu-24.04
     container:
-      image: ghcr.io/nextbsd/nextbsd-kernel-toolchain:amd64-${{ (github.event.client_payload.fbsd_sha || inputs.fbsd_sha) && format('fbsd-{0}', github.event.client_payload.fbsd_sha || inputs.fbsd_sha) || 'latest' }}
+      image: ghcr.io/nextbsd/nextbsd-toolchain:amd64-${{ (github.event.client_payload.fbsd_sha || inputs.fbsd_sha) && format('fbsd-{0}', github.event.client_payload.fbsd_sha || inputs.fbsd_sha) || 'latest' }}
     env:
       NVIDIA_DISTVERSION: "595.84"
       PORTS_FILES: "https://raw.githubusercontent.com/freebsd/freebsd-ports/main/x11/nvidia-driver/files"
@@ -2171,7 +2171,7 @@ jobs:
       - name: Fetch Mesa's libgbm.so.1 loader (build-time only, no mesa/LLVM runtime dep)
         run: |
           set -eu
-          # We run inside the kernel-toolchain container as root: no sudo, and zstd is
+          # We run inside the nextbsd-toolchain container as root: no sudo, and zstd is
           # not in the image. pkg(8) repo files are zstd tarballs, so make sure we can
           # read one. (readelf is already present — the bundle closure check uses it.)
           if ! command -v zstd >/dev/null 2>&1; then

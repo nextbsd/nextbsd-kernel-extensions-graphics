@@ -1,7 +1,7 @@
 # nextbsd-kernel-extensions
 
 Builds NextBSD kernel extensions layered on the kernel `obj` tree, inside the
-SHA-pinned [`nextbsd-kernel-toolchain`](https://github.com/nextbsd/nextbsd-kernel-toolchain)
+SHA-pinned [`nextbsd-toolchain`](https://github.com/nextbsd/nextbsd-toolchain)
 container.
 
 ## Why a separate build?

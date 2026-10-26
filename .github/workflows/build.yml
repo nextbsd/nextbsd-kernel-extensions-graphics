@@ -2161,54 +2161,15 @@ jobs:
           echo "=== wrapped kexts ==="
           for d in "$O"/*.kext; do echo "  $(basename "$d") ($(du -sh "$d"|cut -f1))"; done
 
-      # Mesa's libgbm.so.1 loader — 14 KB, DT_NEEDED = libdrm/libthr/libc only. The
-      # bundle needs it because libnvidia-egl-gbm.so.1 NEEDs it; shipping it INSIDE the
-      # bundle is what keeps NextBSD-kernel-extensions off mesa-libs -> llvm19 (1.9 GB
-      # installed), which is what blew the base image past GitHub's 2 GiB asset cap.
-      # See nextbsd/nextbsd#388 and the long WHY in nvidia-mkbundle.sh.
-      # BUILD-TIME ONLY: we take one file out of the mesa-libs package; nothing in the
-      # shipped image depends on mesa.
-      - name: Fetch Mesa's libgbm.so.1 loader (build-time only, no mesa/LLVM runtime dep)
-        run: |
-          set -eu
-          # We run inside the nextbsd-toolchain container as root: no sudo, and zstd is
-          # not in the image. pkg(8) repo files are zstd tarballs, so make sure we can
-          # read one. (readelf is already present — the bundle closure check uses it.)
-          if ! command -v zstd >/dev/null 2>&1; then
-            apt-get update -qq && apt-get install -y -qq --no-install-recommends zstd
-          fi
-          REPO="https://pkg.FreeBSD.org/FreeBSD:15:amd64/latest"
-          W=/tmp/gbm; rm -rf "$W"; mkdir -p "$W"
-          # Resolve mesa-libs' hashed repopath out of the repo catalogue (it is version
-          # -stamped, so it cannot be hardcoded without rotting). packagesite.yaml is one
-          # compact JSON object per line — no jq/python needed, and neither is guaranteed
-          # to be in this container.
-          curl -fsSL -o "$W/packagesite.pkg" "$REPO/packagesite.pkg"
-          zstd -dc "$W/packagesite.pkg" | tar -xf - -C "$W" packagesite.yaml
-          REPOPATH=$(grep -m1 '"name":"mesa-libs"' "$W/packagesite.yaml" \
-                     | sed -n 's/.*"repopath":"\([^"]*\)".*/\1/p')
-          [ -n "$REPOPATH" ] || { echo "FAIL: mesa-libs absent from the repo catalogue" >&2; exit 1; }
-          echo "  mesa-libs -> $REPOPATH"
-          curl -fsSL -o "$W/mesa-libs.pkg" "$REPO/$REPOPATH"
-          zstd -dc "$W/mesa-libs.pkg" | tar -xf - -C "$W" 2>/dev/null || true
-          GBM=$(find "$W" -name 'libgbm.so.1*' -type f | head -1)
-          [ -n "$GBM" ] || { echo "FAIL: libgbm.so.1 not in the mesa-libs package" >&2; exit 1; }
-          echo "  found $GBM ($(du -h "$GBM" | cut -f1))"
-          readelf -d "$GBM" | sed -n 's/.*(NEEDED).*\[\(.*\)\].*/    NEEDED \1/p'
-          # Guard the premise: the loader must not itself pull gallium/LLVM in.
-          if readelf -d "$GBM" | grep -qE 'NEEDED.*(gallium|LLVM)'; then
-            echo "FAIL: this Mesa's libgbm NEEDs gallium/LLVM — bundling it would reintroduce" >&2
-            echo "  the llvm19 dependency. Do not bundle; see nextbsd/nextbsd#388." >&2
-            exit 1
-          fi
-          echo "NVBUNDLE_LIBGBM=$GBM" >> "$GITHUB_ENV"
-
       # Userland half (#385 follow-on): a GPU driver is two layers — the kexts above
       # are the kernel half; this stages NVIDIA's precompiled X11/GL/EGL/GBM userland
       # from the SAME tarball's obj/ into a version-locked sibling NVIDIA595.bundle,
       # dropped INTO the nvidia-kexts dir so it rides the artifact + nvidia-kexts.tar.gz
       # into NextBSD-kernel-extensions (nextbsd-pkg runs the bundle's nvidia-activate.sh
-      # to symlink it into /usr/local). No compile — pure stage. Repeatable per branch.
+      # to symlink it into /usr/X11). No compile — pure stage. Repeatable per branch.
+      # libgbm.so.1 is not bundled: NextBSD-mesa provides it in /usr/X11/lib, and
+      # nextbsd-pkg lists it in shlibs_required_ignore so NextBSD-kernel-extensions
+      # does not depend on NextBSD-mesa (nextbsd-kernel-extensions-nvidia#2).
       - name: Stage the NVIDIA595 userland bundle (sibling to the kexts)
         run: |
           set -eu
@@ -2222,7 +2183,6 @@ jobs:
                    Contents/Resources/lib/libGLX_nvidia.so.0 \
                    Contents/Resources/lib/libnvidia-glcore.so.1 \
                    Contents/Resources/lib/libnvidia-egl-gbm.so.1 \
-                   Contents/Resources/lib/libgbm.so.1 \
                    Contents/Resources/lib/gbm/nvidia-drm_gbm.so \
                    Contents/Resources/share/glvnd/egl_vendor.d/10_nvidia.json \
                    Contents/Resources/etc/libmap.d/nvidia.conf \
@@ -2231,19 +2191,21 @@ jobs:
           done
           test -f "$B/Contents/Resources/lib/gbm/nvidia-drm_gbm.so" \
             || { echo "FAIL: gbm backend symlink dangling" >&2; exit 1; }
-          # The whole point of nextbsd#388: NOTHING the bundle NEEDs may resolve to
-          # mesa-libs. libgbm.so.1 must come from inside the bundle, never from a dep.
+          # libgbm comes from NextBSD-mesa (/usr/X11/lib), never from the bundle,
+          # and nothing in the bundle may NEED LLVM or gallium (nextbsd#388).
+          for f in "$B"/Contents/Resources/lib/libgbm.so*; do
+            [ -e "$f" ] || [ -L "$f" ] || continue
+            echo "FAIL: NVIDIA595.bundle carries $(basename "$f"); NextBSD-mesa provides libgbm" >&2; exit 1
+          done
           for f in "$B"/Contents/Resources/lib/*.so.* "$B"/Contents/Resources/xorg/drivers/*.so; do
             [ -f "$f" ] || continue
             for n in $(readelf -d "$f" 2>/dev/null | sed -n 's/.*NEEDED.*\[\(lib[^]]*\)\].*/\1/p'); do
               case "$n" in
-                libgbm.so.*) test -f "$B/Contents/Resources/lib/$n" \
-                  || { echo "FAIL: $(basename "$f") NEEDs $n, not in bundle -> pkg would dep on mesa-libs -> llvm19" >&2; exit 1; } ;;
                 *gallium*|*LLVM*) echo "FAIL: $(basename "$f") NEEDs $n — LLVM must not enter the bundle" >&2; exit 1 ;;
               esac
             done
           done
-          echo "  bundle NEEDs no mesa-libs / llvm19 (nextbsd#388)"
+          echo "  bundle carries no libgbm and NEEDs no gallium/LLVM"
           echo "=== nvidia-kexts dir now holds (kernel kexts + userland bundle) ==="
           for d in nvidia-kexts/*.kext nvidia-kexts/*.bundle; do
             [ -e "$d" ] && echo "  $(basename "$d") ($(du -sh "$d"|cut -f1))"

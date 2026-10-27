@@ -156,7 +156,7 @@ lkpi_master_for(struct device *dev)
  * drivers/base/component.c indexes the match array with the comment "Bind
  * components in match order" -- and vc4 depends on it.
  *
- * Concretely, from the vc4 port (nextbsd-kernel-extensions#51):
+ * Concretely, from the vc4 port (nextbsd-kernel-extensions-graphics#51):
  * vc4_crtc_bind() calls vc4_set_crtc_possible_masks(), which walks the
  * encoders ALREADY REGISTERED on the drm_device and sets
  * encoder->possible_crtcs. If a pixelvalve (CRTC) binds before the HDMI
@@ -256,7 +256,7 @@ component_unbind_all(struct device *master, void *master_data)
 	}
 }
 
-/* ---- match-based masters (nextbsd-kernel-extensions#51) ---------------- */
+/* ---- match-based masters (nextbsd-kernel-extensions-graphics#51) ---------------- */
 
 int
 component_compare_dev(struct device *dev, void *data)

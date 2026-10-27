@@ -1,4 +1,4 @@
-# v3d -- the Broadcom V3D GPU driver for BCM2712 (nextbsd-kernel-extensions#66).
+# v3d -- the Broadcom V3D GPU driver for BCM2712 (nextbsd-kernel-extensions-graphics#66).
 #
 # This is the RENDER half of the Pi 5 graphics stack. vc4_kms (#51) drives the
 # display; on 2712 the 3D core is a separate device with its own driver, unlike

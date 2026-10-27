@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: BSD-2-Clause */
 /*
- * sound/pcm_params.h -- empty (nextbsd-kernel-extensions#51).
+ * sound/pcm_params.h -- empty (nextbsd-kernel-extensions-graphics#51).
  *
  * vc4_hdmi.c includes this for the ALSA PCM parameter helpers
  * (params_rate(), params_channels() and friends) used by its HDMI audio

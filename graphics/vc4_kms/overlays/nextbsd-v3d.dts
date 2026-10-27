@@ -1,5 +1,5 @@
 /*
- * Enable the V3D node on BCM2712 (nextbsd-kernel-extensions#51).
+ * Enable the V3D node on BCM2712 (nextbsd-kernel-extensions-graphics#51).
  *
  * bcm2712-ds.dtsi ships v3d@2000000 with status = "disabled", so the node is
  * present but never probed:

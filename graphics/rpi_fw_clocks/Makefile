@@ -1,4 +1,4 @@
-# Raspberry Pi firmware clocks (nextbsd-kernel-extensions#51).
+# Raspberry Pi firmware clocks (nextbsd-kernel-extensions-graphics#51).
 #
 # Plain newbus/clkdev -- no LinuxKPI, no DRM. It provides the clocks that
 # /soc/firmware/clocks advertises and nothing implements, which is why every

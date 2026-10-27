@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-2-Clause */
 /*
  * More than one interrupt per device-tree device
- * (nextbsd-kernel-extensions#51).
+ * (nextbsd-kernel-extensions-graphics#51).
  *
  * LinuxKPI's request_irq() finds its device with lkpi_pci_find_irq_dev(),
  * which searches the PCI list. Kernel patch 0044 added a fallback so a

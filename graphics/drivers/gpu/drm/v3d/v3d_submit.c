@@ -230,7 +230,7 @@ v3d_job_init(struct v3d_dev *v3d, struct drm_file *file_priv,
 	job->file_priv = v3d_priv;
 
 	/*
-	 * DEVIATION from the vendored source (nextbsd-kernel-extensions#66).
+	 * DEVIATION from the vendored source (nextbsd-kernel-extensions-graphics#66).
 	 *
 	 * rpi-6.12.y carries a backport that adds a client_id argument to
 	 * drm_sched_job_init() for per-client fdinfo accounting. drm-kmod's

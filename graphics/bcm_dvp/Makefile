@@ -1,4 +1,4 @@
-# BCM2711/2712 DVP clocks and resets (nextbsd-kernel-extensions#51).
+# BCM2711/2712 DVP clocks and resets (nextbsd-kernel-extensions-graphics#51).
 #
 # Plain newbus: a clkdom of two gate clocks and an OFW reset provider of six
 # lines. hdmi@7ef00700 takes "resets = <&dvp 1>", which nothing could satisfy

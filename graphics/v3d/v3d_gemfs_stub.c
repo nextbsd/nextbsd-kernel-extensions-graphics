@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * v3d_gemfs.c stand-ins (nextbsd-kernel-extensions#66).
+ * v3d_gemfs.c stand-ins (nextbsd-kernel-extensions-graphics#66).
  *
  * Upstream mounts a private tmpfs with huge pages enabled and allocates GEM
  * objects from it, so large buffers get 2MB pages rather than 4K. The file is

@@ -589,7 +589,7 @@ static const struct component_master_ops vc4_drm_ops = {
  *     support 4kp60 or not.
  */
 /*
- * DEVIATION (nextbsd-kernel-extensions#51). Upstream lists nine drivers here;
+ * DEVIATION (nextbsd-kernel-extensions-graphics#51). Upstream lists nine drivers here;
  * this build carries the four that can match on bcm2712.
  *
  * vc4_vec (composite), vc4_dpi (parallel) and vc4_dsi have no bcm2712

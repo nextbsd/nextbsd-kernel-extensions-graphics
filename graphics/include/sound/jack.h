@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: BSD-2-Clause */
 /*
- * sound/jack.h -- types only (nextbsd-kernel-extensions#51).
+ * sound/jack.h -- types only (nextbsd-kernel-extensions-graphics#51).
  *
  * The last include standing between vc4_hdmi.c and a complete measurement.
  * ASoC jack reporting, used to tell userspace an HDMI sink appeared. Same

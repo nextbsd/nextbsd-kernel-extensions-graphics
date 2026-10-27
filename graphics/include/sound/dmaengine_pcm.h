@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: BSD-2-Clause */
 /*
- * sound/dmaengine_pcm.h (nextbsd-kernel-extensions#51).
+ * sound/dmaengine_pcm.h (nextbsd-kernel-extensions-graphics#51).
  *
  * HDMI audio. vc4_hdmi.c registers an ASoC DAI so audio can be carried over
  * HDMI, which needs Linux's sound stack -- ASoC, dmaengine, the PCM layer --
@@ -9,7 +9,7 @@
  * This declares only what vc4_hdmi.c touches so the display path compiles.
  * HDMI audio does NOT work with this, and cannot until there is an ASoC
  * equivalent; the goal here is a picture on the screen first
- * (nextbsd-kernel-extensions#51 is scoped display-only and says so).
+ * (nextbsd-kernel-extensions-graphics#51 is scoped display-only and says so).
  *
  * snd_dmaengine_pcm_prepare_slave_config() returns -ENOSYS rather than 0, so
  * an audio path that ever runs fails visibly instead of appearing to succeed

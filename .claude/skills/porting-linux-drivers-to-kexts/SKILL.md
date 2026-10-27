@@ -19,7 +19,7 @@ carrying a patch forever or waiting on someone else:
 |---|---|---|
 | LinuxKPI | FreeBSD **base** (`sys/compat/linuxkpi`) | the Linux kernel API shims |
 | drm-kmod | `freebsd/drm-kmod` | vendored Linux DRM + FreeBSD glue |
-| **ours** | `nextbsd-kernel-extensions/graphics/` | whatever the two above omit |
+| **ours** | `nextbsd-kernel-extensions-graphics/graphics/` | whatever the two above omit |
 
 We only control layer 3. `graphics/drm_extra_helpers/` is the bucket for
 "things drm-kmod does not ship or does not compile", built once and exported so

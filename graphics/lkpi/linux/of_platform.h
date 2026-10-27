@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: BSD-2-Clause */
 /*
- * <linux/of_platform.h> (nextbsd-kernel-extensions#66).
+ * <linux/of_platform.h> (nextbsd-kernel-extensions-graphics#66).
  *
  * v3d_drv.c includes this header, and nothing in this tree provided it. It is
  * the only header v3d names that did not already exist, and the module would

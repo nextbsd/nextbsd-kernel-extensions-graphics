@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: BSD-2-Clause */
 /*
- * linux/reset.h (nextbsd-kernel-extensions#51).
+ * linux/reset.h (nextbsd-kernel-extensions-graphics#51).
  *
  * Real resets now, not stubs.
  *

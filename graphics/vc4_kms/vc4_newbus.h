@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * Shared newbus glue for the vc4 component drivers
- * (nextbsd-kernel-extensions#51).
+ * (nextbsd-kernel-extensions-graphics#51).
  *
  * Each vc4 hardware block -- HVS, CRTC (pixelvalve), HDMI -- is vendored
  * unmodified from raspberrypi/linux and registers itself as a Linux platform

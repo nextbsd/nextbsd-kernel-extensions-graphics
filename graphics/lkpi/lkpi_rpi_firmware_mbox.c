@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: BSD-2-Clause */
 /*
- * The Raspberry Pi firmware mailbox, FreeBSD side (nextbsd-kernel-extensions#51).
+ * The Raspberry Pi firmware mailbox, FreeBSD side (nextbsd-kernel-extensions-graphics#51).
  *
  * rpi_firmware_property(), rpi_firmware_property_list() and
  * devm_rpi_firmware_get(), implemented over bcm2835_firmware(4). Everything

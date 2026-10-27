@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: BSD-2-Clause */
 /*
- * sound/pcm_drm_eld.h -- no-op (nextbsd-kernel-extensions#51).
+ * sound/pcm_drm_eld.h -- no-op (nextbsd-kernel-extensions-graphics#51).
  *
  * Constrains PCM parameters to what the sink's ELD advertises, so HDMI audio
  * only offers rates the display supports. Audio-only; see sound/soc.h beside

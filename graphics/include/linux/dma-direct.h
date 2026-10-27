@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: BSD-2-Clause */
 /*
- * linux/dma-direct.h (nextbsd-kernel-extensions#51).
+ * linux/dma-direct.h (nextbsd-kernel-extensions-graphics#51).
  *
  * vc4_drv.c uses exactly one symbol from this header, to turn the DMA address
  * the firmware handed back into a physical address when setting up the GPU's

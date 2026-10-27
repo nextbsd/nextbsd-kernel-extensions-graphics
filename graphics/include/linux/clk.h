@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-2-Clause */
 /*
  * linux/clk.h -- over FreeBSD's clk(9) framework
- * (nextbsd-kernel-extensions#51).
+ * (nextbsd-kernel-extensions-graphics#51).
  *
  * This header was deliberately empty for firmware KMS, and its own comment
  * recorded why and predicted this file:

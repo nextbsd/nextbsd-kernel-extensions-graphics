@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: BSD-2-Clause */
 /*
- * The platform-device registry (nextbsd-kernel-extensions#51).
+ * The platform-device registry (nextbsd-kernel-extensions-graphics#51).
  *
  * LinuxKPI has no platform bus. vc4's master builds its component match list
  * by asking, for each entry in component_drivers[], which devices are bound to

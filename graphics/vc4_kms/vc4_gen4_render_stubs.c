@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * Stubs for the GEN_4 render path (nextbsd-kernel-extensions#51).
+ * Stubs for the GEN_4 render path (nextbsd-kernel-extensions-graphics#51).
  *
  * vc4 is two drivers in one source tree: a display pipeline, and a 3D command
  * submission engine for the original VideoCore IV. This module is the display

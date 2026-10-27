@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-2-Clause */
 /*
  * The rpi_firmware entry points vc4_hvs and vc4_hdmi need that
- * vc4_fkms_freebsd.c does not provide (nextbsd-kernel-extensions#51).
+ * vc4_fkms_freebsd.c does not provide (nextbsd-kernel-extensions-graphics#51).
  *
  * That file implements the property interface -- rpi_firmware_property(),
  * rpi_firmware_property_list(), devm_rpi_firmware_get() -- which is everything

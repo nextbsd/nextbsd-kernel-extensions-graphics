@@ -942,7 +942,7 @@ static void vc4_write_scaling_parameters(struct drm_plane_state *state,
 	WARN_ON_ONCE(vc4->gen > VC4_GEN_6_D);
 
 /*
- * DEVIATION (nextbsd-kernel-extensions#51): chroma siting.
+ * DEVIATION (nextbsd-kernel-extensions-graphics#51): chroma siting.
  *
  * Upstream reads state->chroma_siting_h/v, two fields on struct
  * drm_plane_state. Adding them would mean changing a shared DRM core struct --

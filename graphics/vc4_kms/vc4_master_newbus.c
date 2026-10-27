@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * newbus master for the full vc4 KMS pipeline
- * (nextbsd-kernel-extensions#51).
+ * (nextbsd-kernel-extensions-graphics#51).
  *
  * Attaches to the top-level vc4 device-tree node, builds the struct device the
  * vendored master expects, and hands off to vc4_platform_drm_probe(), which

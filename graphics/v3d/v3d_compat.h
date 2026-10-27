@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * The gap between the v3d sources and the DRM that drm-kmod 6.12-lts provides
- * (nextbsd-kernel-extensions#66).
+ * (nextbsd-kernel-extensions-graphics#66).
  *
  * Force-included from the Makefile rather than shipped as a shadowing
  * <drm/...> or <linux/...> header. Shadowing drm-kmod's own copies for this

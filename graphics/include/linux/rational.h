@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: BSD-2-Clause */
 /*
- * linux/rational.h (nextbsd-kernel-extensions#51).
+ * linux/rational.h (nextbsd-kernel-extensions-graphics#51).
  *
  * One symbol: vc4_hdmi.c uses it to find the best rational approximation of a
  * pixel clock ratio within given bounds, when programming HDMI clock dividers.

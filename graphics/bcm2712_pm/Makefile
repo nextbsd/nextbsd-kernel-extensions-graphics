@@ -1,4 +1,4 @@
-# BCM2712 power management -- the V3D reset line (nextbsd-kernel-extensions#66).
+# BCM2712 power management -- the V3D reset line (nextbsd-kernel-extensions-graphics#66).
 #
 # Plain newbus: an OFW reset provider of one line. v3d@2000000 takes
 # "resets = <&pm 0>", which nothing could satisfy before this, and v3d's probe

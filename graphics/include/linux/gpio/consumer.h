@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: BSD-2-Clause */
 /*
- * linux/gpio/consumer.h (nextbsd-kernel-extensions#51).
+ * linux/gpio/consumer.h (nextbsd-kernel-extensions-graphics#51).
  *
  * vc4_hdmi.c uses two symbols, both for the HDMI hotplug-detect line on parts
  * where HPD is wired to a GPIO rather than read from the HDMI block.

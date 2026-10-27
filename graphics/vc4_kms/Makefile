@@ -1,4 +1,4 @@
-# vc4_kms -- the full vc4 KMS display pipeline (nextbsd-kernel-extensions#51).
+# vc4_kms -- the full vc4 KMS display pipeline (nextbsd-kernel-extensions-graphics#51).
 #
 # This STARTED as a compile probe: something to make clang enumerate what a
 # real port was missing, exactly as the #176 probe did. It is no longer that.

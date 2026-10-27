@@ -4,7 +4,7 @@
 # PCI id table.
 #
 # Graphics kext series (IntelGraphics.kext <- i915kms, drm-kmod). Companion to
-# gen-amdgpu/gen-radeon/gen-nvidia: Apple kexts carry IOKitPersonalities in
+# gen-amdgpu/gen-radeon: Apple kexts carry IOKitPersonalities in
 # Info.plist whose IOPCIPrimaryMatch device-id list the in-kernel IOService
 # matcher reads to bind a driver to a device. We produce the faithful equivalent
 # for i915kms from the drm-kmod source being compiled.

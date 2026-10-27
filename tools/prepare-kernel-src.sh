@@ -17,9 +17,13 @@
 # client_payload.sha; if a later kernel publish has replaced `continuous` since,
 # the obj tree is the newer one, so we follow it and say so.
 #
+# It also reads the kernel's KERNEL-BUILD-ID from the obj tree
+# (nextbsd-kernel#326) and leaves it in /tmp/kernel-build-id/KERNEL-BUILD-ID for
+# the job to upload; every kext built here is stamped with it.
+#
 # usage: prepare-kernel-src.sh <target> <target_arch>
 # env:   GH_TOKEN (public reads), DISPATCHED_SHA (optional, client_payload.sha)
-# Exports KERNEL_COMMIT to $GITHUB_ENV when set.
+# Exports KERNEL_COMMIT and KERNEL_BUILD_ID to $GITHUB_ENV when set.
 set -eu
 
 T=${1:?usage: prepare-kernel-src.sh <target> <target_arch>}
@@ -40,11 +44,16 @@ gh release download continuous --repo "$KREPO" \
 [ "$(release_commit)" = "$K" ] \
   || { echo "FAIL: $KREPO continuous moved during the download; rerun" >&2; exit 1; }
 tar -C /usr/obj -xzf /tmp/kernel-obj.tar.gz
+IDF="/usr/obj/usr/src/${T}.${TA}/sys/NEXTBSD/KERNEL-BUILD-ID"
+[ -s "$IDF" ] || { echo "FAIL: $KREPO@$K kernel-obj-${T} has no KERNEL-BUILD-ID ($IDF)" >&2; exit 1; }
+KID=$(cat "$IDF")
+mkdir -p /tmp/kernel-build-id
+echo "$KID" > /tmp/kernel-build-id/KERNEL-BUILD-ID
 
 if [ -n "${DISPATCHED_SHA:-}" ] && [ "$DISPATCHED_SHA" != "$K" ]; then
   echo "::warning::kernel-updated carried $DISPATCHED_SHA, but continuous is now $K; building against $K (the obj tree we have)"
 fi
-echo "==> kernel obj + source from $KREPO@$K ($T)"
+echo "==> kernel obj + source from $KREPO@$K ($T), KERNEL-BUILD-ID $KID"
 
 rm -rf /tmp/nk /tmp/nu
 git clone --quiet --filter=blob:none "https://github.com/$KREPO.git" /tmp/nk
@@ -55,5 +64,8 @@ git -C /tmp/nk checkout --quiet "$K"
 git clone --quiet --depth 1 https://github.com/nextbsd/nextbsd-userland.git /tmp/nu
 /tmp/nk/ci/prepare-src.sh "$T" "$TA" /tmp/nu /usr/src
 
-[ -n "${GITHUB_ENV:-}" ] && echo "KERNEL_COMMIT=$K" >> "$GITHUB_ENV"
+if [ -n "${GITHUB_ENV:-}" ]; then
+  echo "KERNEL_COMMIT=$K" >> "$GITHUB_ENV"
+  echo "KERNEL_BUILD_ID=$KID" >> "$GITHUB_ENV"
+fi
 exit 0

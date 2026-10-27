@@ -26,6 +26,7 @@ on:
       - 'tools/nvidia-mkbundle.sh'
       - 'tools/nvidia-activate.sh'
       - 'tools/prepare-kernel-src.sh'
+      - 'tools/stamp-kernel-build-id.py'
       - 'tests/kext-boot-test.sh'
       - 'tests/personalities-selftest.sh'
   pull_request:
@@ -55,6 +56,7 @@ on:
       - 'tools/nvidia-mkbundle.sh'
       - 'tools/nvidia-activate.sh'
       - 'tools/prepare-kernel-src.sh'
+      - 'tools/stamp-kernel-build-id.py'
       - 'tests/kext-boot-test.sh'
       - 'tests/personalities-selftest.sh'
   workflow_dispatch:
@@ -124,6 +126,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           DISPATCHED_SHA: ${{ github.event.client_payload.sha }}
         run: nbkm-tools/tools/prepare-kernel-src.sh ${{ matrix.target }} ${{ matrix.target_arch }}
+
+      # The KERNEL-BUILD-ID this job built against, for the publish job, which
+      # requires every job on an arch to agree before it stamps and ships.
+      - name: Upload KERNEL-BUILD-ID
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-build-id-modules-${{ matrix.target }}
+          path: /tmp/kernel-build-id/KERNEL-BUILD-ID
+          if-no-files-found: error
 
       - name: Build modules
         run: |
@@ -259,6 +270,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           DISPATCHED_SHA: ${{ github.event.client_payload.sha }}
         run: nbkm-tools/tools/prepare-kernel-src.sh ${{ matrix.target }} ${{ matrix.target_arch }}
+
+      # The KERNEL-BUILD-ID this job built against, for the publish job, which
+      # requires every job on an arch to agree before it stamps and ships.
+      - name: Upload KERNEL-BUILD-ID
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-build-id-drm-kmod-${{ matrix.target }}
+          path: /tmp/kernel-build-id/KERNEL-BUILD-ID
+          if-no-files-found: error
 
       - name: Build drm-kmod (${{ env.DRM_KMOD_REF }}) against the kernel obj
         run: |
@@ -1516,6 +1536,12 @@ jobs:
           print(f"All GPU kext match sets pairwise disjoint ({len(allmatched)} kexts, {len(pairs)} pairs)")
           PY
 
+      # Every kext records the kernel build it was compiled for, in its own
+      # Info.plist (NBSDKernelBuildID), so the ID travels with the bundle into
+      # /System/Library/Extensions (nextbsd-kernel#326).
+      - name: Stamp KERNEL-BUILD-ID into the graphics kexts
+        run: python3 nbkm-tools/tools/stamp-kernel-build-id.py "$KERNEL_BUILD_ID" kexts
+
       - name: Upload graphics kexts artifact
         uses: actions/upload-artifact@v4
         with:
@@ -1742,6 +1768,21 @@ jobs:
         with:
           path: artifacts
 
+      # Every job on an arch must have built against the same kernel build;
+      # a mismatch means nextbsd-kernel's `continuous` moved mid-run, and the
+      # kexts in one tarball would disagree. KBID_<arch> is what this publish
+      # stamps into (and checks against) every kext it ships.
+      - name: Resolve KERNEL-BUILD-ID per arch
+        run: |
+          set -eu
+          for arch in amd64 arm64; do
+            ids=$(cat artifacts/kernel-build-id-*-"$arch"/KERNEL-BUILD-ID 2>/dev/null | sort -u)
+            n=$(printf '%s' "$ids" | grep -c . || true)
+            [ "$n" -eq 1 ] || { echo "FAIL: $arch jobs built against $n kernel builds: $ids" >&2; exit 1; }
+            echo "  $arch: $ids"
+            echo "KBID_$arch=$ids" >> "$GITHUB_ENV"
+          done
+
       - name: Package per-arch assets
         run: |
           mkdir -p out
@@ -1831,6 +1872,7 @@ jobs:
             test -f "$PERS" || { echo "personalities fragment missing: $PERS" >&2; exit 1; }
             tools/ko2kext.sh -f lf/intel/iwlwifi -p "$PERS" "$IWKO" IntelWiFi org.nextbsd.kext.intelwifi
             echo "==> IntelWiFi.kext: $(find IntelWiFi.kext/Contents/Resources/firmware -type f | wc -l) firmware files, $(du -sh IntelWiFi.kext | cut -f1), IOKitPersonalities injected"
+            python3 tools/stamp-kernel-build-id.py "$KBID_amd64" IntelWiFi.kext
             tar -czf out/intelwifi-kext.tar.gz IntelWiFi.kext
             ls -lh out/intelwifi-kext.tar.gz
           fi
@@ -1852,6 +1894,7 @@ jobs:
             test -f "$PERS" || { echo "personalities fragment missing: $PERS" >&2; exit 1; }
             tools/ko2kext.sh -p "$PERS" "$EMKO" IntelEthernet org.nextbsd.kext.intelethernet
             echo "==> IntelEthernet.kext: $(du -sh IntelEthernet.kext | cut -f1), IOKitPersonalities injected"
+            python3 tools/stamp-kernel-build-id.py "$KBID_amd64" IntelEthernet.kext
             tar -czf out/intelethernet-kext.tar.gz IntelEthernet.kext
             ls -lh out/intelethernet-kext.tar.gz
           fi
@@ -1909,6 +1952,10 @@ jobs:
             inject "$GDIR" IntelGraphics  i915   LICENSE.i915
             inject "$GDIR" AMDGraphics    amdgpu LICENSE.amdgpu
             inject "$GDIR" RadeonGraphics radeon LICENSE.radeon
+            # Stamped by the drm-kmod job; this confirms they carry this arch's
+            # ID (and fails if not) before they ship.
+            eval "kbid=\$KBID_$arch"
+            python3 tools/stamp-kernel-build-id.py "$kbid" "$GDIR"
             # One asset per arch for the whole graphics stack (drm core kexts carry
             # no firmware but must ship so the dependency chain resolves at load).
             tar -C "$GDIR" -czf "out/graphics-kexts-$arch.tar.gz" .
@@ -1928,6 +1975,7 @@ jobs:
           else
             NDIR=$(dirname "$NV")
             echo "nvidia kexts at: $NDIR"; ls -1 "$NDIR"
+            python3 tools/stamp-kernel-build-id.py "$KBID_amd64" "$NDIR"
             tar -C "$NDIR" -czf out/nvidia-kexts.tar.gz .
             echo "==> nvidia-kexts.tar.gz: $(du -sh out/nvidia-kexts.tar.gz | cut -f1)"
           fi
@@ -1950,6 +1998,10 @@ jobs:
             (LinuxVirtIO/IOGraphicsShmem/VirtIOGraphics) on both, each with its
             device-id match table + bundled vendor firmware) — all installed into
             /System/Library/Extensions.
+
+            Every kext carries `NBSDKernelBuildID` in its Info.plist: the
+            nextbsd-kernel KERNEL-BUILD-ID it was built for (amd64
+            `${{ env.KBID_amd64 }}`, arm64 `${{ env.KBID_arm64 }}`).
 
             Build log: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
             Commit: ${{ github.sha }}
@@ -2001,6 +2053,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           DISPATCHED_SHA: ${{ github.event.client_payload.sha }}
         run: nbkm-tools/tools/prepare-kernel-src.sh amd64 amd64
+
+      # The KERNEL-BUILD-ID this job built against, for the publish job, which
+      # requires every job on an arch to agree before it stamps and ships.
+      - name: Upload KERNEL-BUILD-ID
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-build-id-nvidia-amd64
+          path: /tmp/kernel-build-id/KERNEL-BUILD-ID
+          if-no-files-found: error
 
       - name: Fetch + patch NVIDIA source (SUB_PATCHES + port REINPLACE edits)
         run: |
@@ -2195,6 +2256,9 @@ jobs:
           print(f"NVIDIAGraphics595: {len(ids)} Turing+ ids (0x10de), firmware {fw}")
           print("NVIDIA kext bundles OK (chain + personalities + firmware)")
           PY
+
+      - name: Stamp KERNEL-BUILD-ID into the NVIDIA kexts
+        run: python3 nbkm-tools/tools/stamp-kernel-build-id.py "$KERNEL_BUILD_ID" nvidia-kexts
 
       - name: Upload NVIDIA kexts artifact
         uses: actions/upload-artifact@v4

@@ -1,6 +1,6 @@
 /*
  * Enable the full VC4 KMS display pipeline on BCM2712
- * (nextbsd-kernel-extensions#51).
+ * (nextbsd-kernel-extensions-graphics#51).
  *
  * bcm2712 ships every one of these disabled, so they enumerate as
  * "(no driver attached)" with "disabled" in the newbus line and are never

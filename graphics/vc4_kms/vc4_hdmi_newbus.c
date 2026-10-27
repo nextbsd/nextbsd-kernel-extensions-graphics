@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * newbus shim for vc4_hdmi_driver (nextbsd-kernel-extensions#51).
+ * newbus shim for vc4_hdmi_driver (nextbsd-kernel-extensions-graphics#51).
  *
  * The HDMI controller and its PHY. A Pi 5 has two, hdmi0 and hdmi1, matched by
  * separate compatible strings with different .data.

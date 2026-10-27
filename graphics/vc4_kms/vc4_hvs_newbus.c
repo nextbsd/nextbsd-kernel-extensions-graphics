@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * newbus shim for vc4_hvs_driver (nextbsd-kernel-extensions#51).
+ * newbus shim for vc4_hvs_driver (nextbsd-kernel-extensions-graphics#51).
  *
  * The compositor: reads framebuffers from memory, composites and scales planes,
  * and feeds pixels to the display. This is the block firmware KMS asks the

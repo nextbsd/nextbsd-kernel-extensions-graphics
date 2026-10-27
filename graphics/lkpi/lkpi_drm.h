@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-2-Clause */
 /*
  * DRM helpers vc4 needs that drm-kmod does not provide
- * (nextbsd-kernel-extensions#51).
+ * (nextbsd-kernel-extensions-graphics#51).
  *
  * FORCE-INCLUDED, not a shadowing header. The Makefile adds
  *

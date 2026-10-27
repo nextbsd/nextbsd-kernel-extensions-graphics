@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: BSD-2-Clause */
 /*
- * drm/drm_fbdev_dma.h (nextbsd-kernel-extensions#51, #55).
+ * drm/drm_fbdev_dma.h (nextbsd-kernel-extensions-graphics#51, #55).
  *
  * drm_fbdev_dma_setup() sets up fbdev emulation so the console can draw on the
  * KMS device. This used to be a no-op here, and the consequence was exactly

@@ -2117,7 +2117,7 @@ static int vc4_hvs_bind(struct device *dev, struct device *master, void *data)
 			return -EPROBE_DEFER;
 
 	/*
-	 * DEVIATION (nextbsd-kernel-extensions#51): clocks are OPTIONAL here.
+	 * DEVIATION (nextbsd-kernel-extensions-graphics#51): clocks are OPTIONAL here.
 	 *
 	 * The bcm2712 device tree gives these nodes no "clocks" property at all
 	 * -- hvs@107c580000 carries reg, interrupts, interrupt-names and iommus

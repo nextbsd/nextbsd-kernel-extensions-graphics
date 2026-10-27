@@ -30,7 +30,7 @@
 
 
 /*
- * MODULE-LOCAL LinuxKPI (nextbsd-kernel-extensions#51).
+ * MODULE-LOCAL LinuxKPI (nextbsd-kernel-extensions-graphics#51).
  *
  * This header shadows the kernel's <linux/platform_device.h>. Every drm-kmod module is
  * built with its own include paths ahead of the kernel's:
@@ -134,7 +134,7 @@ struct platform_driver {
 	int				(*probe)(struct platform_device *);
 	void				(*remove)(struct platform_device *);
 	/*
-	 * nextbsd-kernel-extensions#51: upstream renamed .remove to .remove_new
+	 * nextbsd-kernel-extensions-graphics#51: upstream renamed .remove to .remove_new
 	 * during the transition to a void return, and 6.12-era drivers assign
 	 * the new name -- vc4_hvs, vc4_crtc and vc4_hdmi all do. Both are
 	 * carried because the tree contains drivers written against each.

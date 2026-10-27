@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * newbus shim for the v3d GPU driver (nextbsd-kernel-extensions#66).
+ * newbus shim for the v3d GPU driver (nextbsd-kernel-extensions-graphics#66).
  *
  * v3d is vendored unmodified from raspberrypi/linux rpi-6.12.y, where it is a
  * Linux platform driver. LinuxKPI has no platform bus for it to bind to, so

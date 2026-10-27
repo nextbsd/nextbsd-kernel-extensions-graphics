@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: BSD-2-Clause */
 /*
- * kunit/test-bug.h -- no-op (nextbsd-kernel-extensions#51).
+ * kunit/test-bug.h -- no-op (nextbsd-kernel-extensions-graphics#51).
  *
  * KUnit is Linux's in-kernel unit test framework. vc4 compiles a hook into its
  * register accessors so that a unit test touching real hardware fails loudly:

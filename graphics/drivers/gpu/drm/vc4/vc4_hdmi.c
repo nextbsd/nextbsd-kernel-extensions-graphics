@@ -429,7 +429,7 @@ static int vc4_hdmi_reset_link(struct drm_connector *connector,
 }
 
 /*
- * DEVIATION (nextbsd-kernel-extensions#51): EDID over the firmware mailbox.
+ * DEVIATION (nextbsd-kernel-extensions-graphics#51): EDID over the firmware mailbox.
  *
  * vc4_hdmi reads EDID over DDC, an i2c bus. On bcm2712 that controller is
  * ddc0/ddc1 at 0x7d508200, compatible "brcm,brcmstb-i2c" -- a Broadcom STB
@@ -2056,7 +2056,7 @@ static bool vc5_hdmi_hp_detect(struct vc4_hdmi *vc4_hdmi)
 }
 
 /*
- * DEVIATION (nextbsd-kernel-extensions#51): HDMI audio is not built.
+ * DEVIATION (nextbsd-kernel-extensions-graphics#51): HDMI audio is not built.
  *
  * Everything from here to vc4_hdmi_audio_init() is the ASoC codec: MAI clock
  * setup, the DAI ops, the snd_soc_component_driver, and the card/link

@@ -24,7 +24,7 @@
 
 
 /*
- * MODULE-LOCAL LinuxKPI (nextbsd-kernel-extensions#51).
+ * MODULE-LOCAL LinuxKPI (nextbsd-kernel-extensions-graphics#51).
  *
  * This header shadows the kernel's <linux/component.h>. Every drm-kmod module is
  * built with its own include paths ahead of the kernel's:
@@ -92,7 +92,7 @@ int	component_bind_all(struct device *master, void *master_data);
 void	component_unbind_all(struct device *master, void *master_data);
 
 /*
- * Match-based masters (nextbsd-kernel-extensions#51).
+ * Match-based masters (nextbsd-kernel-extensions-graphics#51).
  *
  * The simple form above binds every registered component to whichever master
  * asks. That is right for a driver with one component -- firmware KMS -- and

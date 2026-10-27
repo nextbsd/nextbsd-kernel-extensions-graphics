@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: BSD-2-Clause */
 /*
- * Raspberry Pi firmware clocks (nextbsd-kernel-extensions#51).
+ * Raspberry Pi firmware clocks (nextbsd-kernel-extensions-graphics#51).
  *
  * WHY THIS EXISTS
  *

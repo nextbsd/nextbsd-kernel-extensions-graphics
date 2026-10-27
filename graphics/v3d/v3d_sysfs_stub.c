@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * v3d_sysfs.c stand-ins (nextbsd-kernel-extensions#66).
+ * v3d_sysfs.c stand-ins (nextbsd-kernel-extensions-graphics#66).
  *
  * Upstream v3d_sysfs.c exports one attribute group: per-queue GPU usage
  * counters under /sys/devices/.../gpu_stats. It is built on sysfs_create_group()

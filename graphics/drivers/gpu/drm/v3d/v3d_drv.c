@@ -514,7 +514,7 @@ static void v3d_platform_drm_remove(struct platform_device *pdev)
 }
 
 /*
- * DEVIATION from the vendored source (nextbsd-kernel-extensions#66): no longer
+ * DEVIATION from the vendored source (nextbsd-kernel-extensions-graphics#66): no longer
  * static, so v3d_newbus.c can reach .probe and .remove. Upstream only ever
  * touches this through module_platform_driver(), which registers it with a
  * platform bus that does not exist here. Same deviation, for the same reason,

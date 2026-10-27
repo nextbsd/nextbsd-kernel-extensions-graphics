@@ -30,7 +30,7 @@
 
 
 /*
- * MODULE-LOCAL LinuxKPI (nextbsd-kernel-extensions#51).
+ * MODULE-LOCAL LinuxKPI (nextbsd-kernel-extensions-graphics#51).
  *
  * This header shadows the kernel's <linux/of.h>. Every drm-kmod module is
  * built with its own include paths ahead of the kernel's:

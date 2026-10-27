@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-2-Clause */
 /*
  * DRM helpers vc4 needs that drm-kmod does not provide
- * (nextbsd-kernel-extensions#51). See lkpi_drm.h for why these live in the
+ * (nextbsd-kernel-extensions-graphics#51). See lkpi_drm.h for why these live in the
  * module rather than in a drm-kmod patch.
  */
 

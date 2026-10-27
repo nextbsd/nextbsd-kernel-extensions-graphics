@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * newbus shim for vc4_crtc_driver (nextbsd-kernel-extensions#51).
+ * newbus shim for vc4_crtc_driver (nextbsd-kernel-extensions-graphics#51).
  *
  * The pixelvalve: takes composited pixels from the HVS and drives them out with
  * the display timings. One per output; a Pi 5 has two.

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: BSD-2-Clause */
 /*
- * sound/soc.h -- ASoC types only (nextbsd-kernel-extensions#51).
+ * sound/soc.h -- ASoC types only (nextbsd-kernel-extensions-graphics#51).
  *
  * vc4_hdmi.c registers an ASoC card, component and DAI so audio can travel
  * over the HDMI link. FreeBSD has no ASoC, and #51 is scoped display-only.

@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-2-Clause */
 /*
  * BCM2712 power-management block: the V3D reset line
- * (nextbsd-kernel-extensions#66).
+ * (nextbsd-kernel-extensions-graphics#66).
  *
  * WHY THIS EXISTS
  *

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: BSD-2-Clause */
 /*
- * sound/hdmi-codec.h (nextbsd-kernel-extensions#51).
+ * sound/hdmi-codec.h (nextbsd-kernel-extensions-graphics#51).
  *
  * The ASoC HDMI codec interface. vc4_hdmi.c registers itself as an HDMI audio
  * codec so audio can be carried over the HDMI link.

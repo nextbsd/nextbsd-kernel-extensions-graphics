@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * Shared newbus glue for the vc4 component drivers -- see vc4_newbus.h for
- * why this exists (nextbsd-kernel-extensions#51).
+ * why this exists (nextbsd-kernel-extensions-graphics#51).
  */
 
 #include <sys/param.h>

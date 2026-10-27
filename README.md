@@ -1,4 +1,4 @@
-# nextbsd-kernel-extensions
+# nextbsd-kernel-extensions-graphics
 
 Builds NextBSD kernel extensions layered on the kernel `obj` tree, inside the
 SHA-pinned [`nextbsd-toolchain`](https://github.com/nextbsd/nextbsd-toolchain)

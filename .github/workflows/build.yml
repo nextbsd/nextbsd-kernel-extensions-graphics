@@ -16,8 +16,6 @@ on:
       - 'tools/gen-vboxvideo-personalities.sh'
       - '.github/workflows/build.yml'
       - 'tools/ko2kext.sh'
-      - 'tools/gen-iwlwifi-personalities.sh'
-      - 'tools/gen-em-personalities.sh'
       - 'tools/gen-i915-personalities.sh'
       - 'tools/gen-amdgpu-personalities.sh'
       - 'tools/gen-radeon-personalities.sh'
@@ -42,8 +40,6 @@ on:
       - 'tools/gen-vboxvideo-personalities.sh'
       - '.github/workflows/build.yml'
       - 'tools/ko2kext.sh'
-      - 'tools/gen-iwlwifi-personalities.sh'
-      - 'tools/gen-em-personalities.sh'
       - 'tools/gen-i915-personalities.sh'
       - 'tools/gen-amdgpu-personalities.sh'
       - 'tools/gen-radeon-personalities.sh'
@@ -88,133 +84,6 @@ env:
   DRM_KMOD_REF: drm_v6.12.85_3
 
 jobs:
-  modules:
-    runs-on: ubuntu-24.04
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: amd64
-            target_arch: amd64
-          - target: arm64
-            target_arch: aarch64
-    container:
-      # Same per-arch toolchain image the kernel was built in, so module source
-      # matches. Cross-builds on the x86_64 runner (no emulation).
-      image: ghcr.io/nextbsd/nextbsd-toolchain:${{ matrix.target }}-${{ (github.event.client_payload.fbsd_sha || inputs.fbsd_sha) && format('fbsd-{0}', github.event.client_payload.fbsd_sha || inputs.fbsd_sha) || 'latest' }}
-    steps:
-      - name: Checkout tools
-        uses: actions/checkout@v4
-        with:
-          path: nbkm-tools
-
-      # The kernel obj tree from nextbsd-kernel's `continuous` release, and
-      # /usr/src prepared by that same commit's ci/prepare-src.sh, so these
-      # modules build from exactly the kernel's tree (nextbsd-kernel#325).
-      - name: Kernel obj tree + prepared source (same nextbsd-kernel commit)
-        env:
-          # Public reads only: the built-in github.token is enough, and fork
-          # PRs (read-only token, no secrets) can run this step.
-          GH_TOKEN: ${{ github.token }}
-          DISPATCHED_SHA: ${{ github.event.client_payload.sha }}
-        run: nbkm-tools/tools/prepare-kernel-src.sh ${{ matrix.target }} ${{ matrix.target_arch }}
-
-      # The KERNEL-BUILD-ID this job built against, for the publish job, which
-      # requires every job on an arch to agree before it stamps and ships.
-      - name: Upload KERNEL-BUILD-ID
-        uses: actions/upload-artifact@v4
-        with:
-          name: kernel-build-id-modules-${{ matrix.target }}
-          path: /tmp/kernel-build-id/KERNEL-BUILD-ID
-          if-no-files-found: error
-
-      - name: Build modules
-        run: |
-          cd /usr/src
-          # --cross-bindir points at the external Clang 19 cross toolchain
-          # (CROSS_BINDIR), inherited from the toolchain image ENV.
-          # NO_KERNEL=yes is not a knob buildkernel honours: this re-runs
-          # config(8) and relinks the kernel in the downloaded obj tree before
-          # building modules. That is why the source must be the kernel's own
-          # prepared tree (previous step). Building against a kernel SDK
-          # instead, without relinking, is nextbsd-kernel#327 / nextbsd#555.
-          ./tools/build/make.py \
-            --cross-bindir="${CROSS_BINDIR}" \
-            TARGET="${{ matrix.target }}" \
-            TARGET_ARCH="${{ matrix.target_arch }}" \
-            KERNCONF=NEXTBSD \
-            NO_KERNEL=yes \
-            buildkernel -j"$(nproc)"
-
-      # P1 (#213): generate the IntelWiFi IOKitPersonalities (device-id match
-      # table) from the iwlwifi driver source in /usr/src — the data the
-      # in-kernel IOService matcher (K2/K3) reads to bind the driver. Apple kexts
-      # carry this in Info.plist; we derive it from the driver's own PCI id table
-      # (faithful + robust — no kldxref needed). amd64 only (arch-independent;
-      # IntelWiFi.kext is amd64); uploaded for the kext + publish jobs.
-      - name: Generate IntelWiFi IOKitPersonalities (P1 #213)
-        if: matrix.target == 'amd64'
-        run: |
-          chmod +x nbkm-tools/tools/gen-iwlwifi-personalities.sh
-          DRV=/usr/src/sys/contrib/dev/iwlwifi/pcie/drv.c
-          test -f "$DRV" || { echo "iwlwifi drv.c not found at $DRV" >&2; exit 1; }
-          mkdir -p personalities
-          nbkm-tools/tools/gen-iwlwifi-personalities.sh "$DRV" \
-              org.nextbsd.kext.intelwifi IntelWiFi > personalities/IntelWiFi.iokitpersonalities
-          echo "=== generated ==="
-          cat personalities/IntelWiFi.iokitpersonalities
-
-      - name: Upload IntelWiFi personalities artifact
-        if: matrix.target == 'amd64'
-        uses: actions/upload-artifact@v4
-        with:
-          name: intelwifi-personalities
-          path: personalities/IntelWiFi.iokitpersonalities
-
-      # #219 (D1): generate the IntelEthernet IOKitPersonalities from the e1000
-      # driver's PVID tables (em + igb) in /usr/src — same approach as IntelWiFi,
-      # but the e1000 device ids are symbolic (E1000_DEV_ID_*) and resolved from
-      # e1000_hw.h. amd64 only (arch-independent); uploaded for the kext + publish
-      # jobs.
-      - name: Generate IntelEthernet IOKitPersonalities (#219)
-        if: matrix.target == 'amd64'
-        run: |
-          chmod +x nbkm-tools/tools/gen-em-personalities.sh
-          E1000=/usr/src/sys/dev/e1000
-          test -f "$E1000/if_em.c" || { echo "e1000 driver not found at $E1000" >&2; exit 1; }
-          mkdir -p personalities
-          nbkm-tools/tools/gen-em-personalities.sh "$E1000" \
-              org.nextbsd.kext.intelethernet IntelEthernet > personalities/IntelEthernet.iokitpersonalities
-          echo "=== generated ==="
-          cat personalities/IntelEthernet.iokitpersonalities
-
-      - name: Upload IntelEthernet personalities artifact
-        if: matrix.target == 'amd64'
-        uses: actions/upload-artifact@v4
-        with:
-          name: intelethernet-personalities
-          path: personalities/IntelEthernet.iokitpersonalities
-
-      - name: Upload modules artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: nextbsd-modules-${{ matrix.target }}
-          path: /usr/obj/**/modules/
-
-      - name: Create release
-        if: github.event.client_payload.release == 'true'
-        run: |
-          cd /usr/obj
-          tar czf /tmp/nextbsd-modules-${{ matrix.target }}.tar.gz $(find . -type d -name modules)
-          # Per-arch tag so the two matrix legs don't collide on one release.
-          gh release create "v$(date +%Y%m%d)-modules-${{ matrix.target }}" \
-            /tmp/nextbsd-modules-${{ matrix.target }}.tar.gz \
-            --repo ${{ github.repository }} \
-            --title "NextBSD Modules ${{ matrix.target }} $(date +%Y-%m-%d)" \
-            --notes "Built against FreeBSD ${FREEBSD_BRANCH}"
-        env:
-          GH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
-
   # EXPERIMENTAL (graphics kext series, step 1): prove the drm-kmod graphics
   # drivers BUILD against our patched kernel obj before we wrap them into kexts.
   # `6.12-lts` is the drm-kmod branch matching FreeBSD releng/15.1 (the
@@ -793,7 +662,7 @@ jobs:
           echo "=== did it LINK? (the real question now the shims exist)"
           # Stage it for packaging. Without this the
           # module builds and is then thrown away, which is why it appeared in
-          # neither graphics-kexts-*.tar.gz nor nextbsd-modules-*.tar.gz and
+          # graphics-kexts-*.tar.gz and
           # could not be tested on hardware at all.
           cp /tmp/drm-kmod/vc4_kms/vc4_kms.ko /tmp/ko-out/ 2>/dev/null || true
           ls -l /tmp/drm-kmod/vc4_kms/vc4_kms.ko 2>/dev/null \
@@ -1545,8 +1414,7 @@ jobs:
   # parsers against synthetic PCI-id fixtures (same shapes as i915_pciids.h /
   # amdgpu_drv.c / drm_pciids.h) and asserts the emitted match table — including
   # that radeon EXCLUDES r128 (also vendor 0x1002). Lightweight (no module build
-  # needed); the equivalent of how gen-em/gen-iwlwifi are proven by the module +
-  # kext-smoke jobs. PR-only; publish stays gated to main.
+  # needed). PR-only; publish stays gated to main.
   graphics-personalities-selftest:
     name: graphics personalities self-test (i915/amdgpu/radeon)
     if: github.event_name == 'pull_request'
@@ -1746,7 +1614,7 @@ jobs:
   # publishes once — no release-creation race). PRs build but never reach here.
   publish:
     name: publish continuous
-    needs: [modules, drm-kmod]
+    needs: [drm-kmod]
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     permissions:
@@ -1778,13 +1646,6 @@ jobs:
       - name: Package per-arch assets
         run: |
           mkdir -p out
-          for arch in amd64 arm64; do
-            # nextbsd-modules-<arch>.tar.gz: the built *.ko module tree,
-            # consumed by nextbsd (installs them into /boot/kernel on the ISO).
-            if [ -d "artifacts/nextbsd-modules-$arch" ]; then
-              tar -C "artifacts/nextbsd-modules-$arch" -czf "out/nextbsd-modules-$arch.tar.gz" .
-            fi
-          done
           # rpi5-overlays.tar.gz: device-tree overlays that must land on the
           # Pi's FAT32 firmware partition, which no package can write -- pkg(8)
           # installs into the UFS root and that partition is not mounted at
@@ -1838,58 +1699,6 @@ jobs:
           tar tzf out/rpi5-overlays.tar.gz
           ls -lh out/
           ls -lh out/
-
-      # Build the SHIPPED IntelWiFi.kext (amd64) with the FULL Intel iwlwifi
-      # firmware set bundled in, and publish it as intelwifi-kext.tar.gz on the
-      # continuous release (picked up by out/*.tar.gz below). nextbsd installs it
-      # into the ISO's /System/Library/Extensions; the kernel finds the firmware
-      # via the firmware_path search list (nextbsd-kernel patch 0004) once the
-      # image's loader.conf points at the kext's firmware dir. One kext supports
-      # every iwlwifi model (7260 .. AX210 .. BE200). Intel permits unmodified
-      # binary redistribution provided the licence ships alongside (bundled).
-      - name: Build + bundle IntelWiFi.kext (full iwlwifi firmware)
-        run: |
-          chmod +x tools/ko2kext.sh
-          IWKO=$(find artifacts/nextbsd-modules-amd64 -type f -name if_iwlwifi.ko | head -1)
-          if [ -z "$IWKO" ]; then
-            echo "WARN: if_iwlwifi.ko not in modules artifact — skipping IntelWiFi.kext"
-          else
-            FW_TAG=20260519
-            rm -rf lf
-            git clone --depth 1 --branch "$FW_TAG" --filter=blob:none --sparse \
-                https://gitlab.com/kernel-firmware/linux-firmware.git lf
-            ( cd lf && git sparse-checkout set --no-cone intel/iwlwifi LICENCE.iwlwifi_firmware )
-            cp -L lf/LICENCE.iwlwifi_firmware lf/intel/iwlwifi/
-            PERS=artifacts/intelwifi-personalities/IntelWiFi.iokitpersonalities
-            test -f "$PERS" || { echo "personalities fragment missing: $PERS" >&2; exit 1; }
-            tools/ko2kext.sh -f lf/intel/iwlwifi -p "$PERS" "$IWKO" IntelWiFi org.nextbsd.kext.intelwifi
-            echo "==> IntelWiFi.kext: $(find IntelWiFi.kext/Contents/Resources/firmware -type f | wc -l) firmware files, $(du -sh IntelWiFi.kext | cut -f1), IOKitPersonalities injected"
-            python3 tools/stamp-kernel-build-id.py "$KBID_amd64" IntelWiFi.kext
-            tar -czf out/intelwifi-kext.tar.gz IntelWiFi.kext
-            ls -lh out/intelwifi-kext.tar.gz
-          fi
-
-      # Build the SHIPPED IntelEthernet.kext (amd64) from if_em.ko and publish it
-      # as intelethernet-kext.tar.gz (#219). No firmware — e1000 is a pure driver.
-      # nextbsd installs it into the ISO's /System/Library/Extensions; once the
-      # kernel drops `device em` (the follow-on kernel PR), the matcher auto-loads
-      # this kext when the e1000 attaches. One kext covers the whole Intel GbE
-      # family (em + igb).
-      - name: Build + bundle IntelEthernet.kext (if_em)
-        run: |
-          chmod +x tools/ko2kext.sh
-          EMKO=$(find artifacts/nextbsd-modules-amd64 -type f -name if_em.ko | head -1)
-          if [ -z "$EMKO" ]; then
-            echo "WARN: if_em.ko not in modules artifact — skipping IntelEthernet.kext"
-          else
-            PERS=artifacts/intelethernet-personalities/IntelEthernet.iokitpersonalities
-            test -f "$PERS" || { echo "personalities fragment missing: $PERS" >&2; exit 1; }
-            tools/ko2kext.sh -p "$PERS" "$EMKO" IntelEthernet org.nextbsd.kext.intelethernet
-            echo "==> IntelEthernet.kext: $(du -sh IntelEthernet.kext | cut -f1), IOKitPersonalities injected"
-            python3 tools/stamp-kernel-build-id.py "$KBID_amd64" IntelEthernet.kext
-            tar -czf out/intelethernet-kext.tar.gz IntelEthernet.kext
-            ls -lh out/intelethernet-kext.tar.gz
-          fi
 
       # Build the SHIPPED graphics stack: the drm-kmod job already wrapped +
       # validated the bundles (drm core + the GPU drivers each arch has, with the
@@ -1959,14 +1768,10 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: continuous
-          name: Continuous modules build
+          name: Continuous graphics kexts build
           body: |
-            Rolling module build, refreshed on every successful `main` build.
-            Consumed by nextbsd: `nextbsd-modules-<arch>.tar.gz` (the *.ko tree,
-            installed into /boot/kernel), `intelwifi-kext.tar.gz` (the
-            IntelWiFi.kext bundle with the full iwlwifi firmware set) and
-            `intelethernet-kext.tar.gz` (the IntelEthernet.kext bundle, if_em /
-            Intel GbE family) and `graphics-kexts-<arch>.tar.gz` (the drm-kmod
+            Rolling graphics kext build, refreshed on every successful `main` build.
+            `graphics-kexts-<arch>.tar.gz` (the drm-kmod
             graphics stack: IOGraphics/DMABuf/TTM drm core, plus IntelGraphics/
             AMDGraphics/RadeonGraphics on amd64 and the virtio-gpu trio
             (LinuxVirtIO/IOGraphicsShmem/VirtIOGraphics) on both, each with its

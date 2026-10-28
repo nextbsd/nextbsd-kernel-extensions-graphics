@@ -1,0 +1,26 @@
+# OSBundleRequired per graphics kext (nextbsd-kernel-extensions#4), by role, as Mac OS X 10.9.5 tags its own:
+#   Safe Boot  the drivers that light up the display and the libraries they load with
+#              (10.9: AppleIntelFramebufferAzul/Capri/SNB, AMD*Controller, AMDFramebuffer, NVDAStartup,
+#              NVDAResman, IOSurface, IOAcceleratorFamily2, AppleGraphicsControl)
+#   (no key)   3D-only accelerators (10.9: AppleIntelHD4000Graphics, AMDRadeonX4000, GeForce): V3D here
+# A tagged kext's libraries are tagged too: in Safe Mode only tagged kexts load.
+# A trailing "?" marks a kext only one arch builds. tools/set-osbundlerequired.py applies this table;
+# nothing reads the key yet (it is for a pre-root load path).
+kext	required
+IOGraphics	Safe Boot
+IOGraphicsDMA	Safe Boot
+IOGraphicsShmem	Safe Boot
+IOGraphicsExtras	Safe Boot
+DMABuf	Safe Boot
+TTM	Safe Boot
+LinuxVirtIO	Safe Boot
+VirtIOGraphics	Safe Boot
+IntelGraphics?	Safe Boot
+AMDGraphics?	Safe Boot
+RadeonGraphics?	Safe Boot
+BochsGraphics?	Safe Boot
+VBoxGraphics?	Safe Boot
+VideoCore6KMS?	Safe Boot
+BcmDVP?	Safe Boot
+BcmPM?	Safe Boot
+RpiFirmwareClocks?	Safe Boot

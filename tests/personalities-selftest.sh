@@ -9,7 +9,7 @@
 # Critically asserts radeon EXCLUDES r128 (also vendor 0x1002) — the macro-scope
 # trap a naive whole-file 0x1002 grep would fall into.
 #
-# Mirrors gen-em / gen-iwlwifi being proven by the module + kext-smoke jobs; this
+# (gen-em / gen-iwlwifi moved to nextbsd-kernel-extensions with their kexts.) This
 # is the equivalent proof for the graphics generators. Runs on PRs (build.yml);
 # publish stays gated to main.
 set -eu

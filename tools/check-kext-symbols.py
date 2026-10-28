@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """check-kext-symbols.py — fail the build when a kext would fail kldload.
 
-    usage: check-kext-symbols.py <kernel-elf> <kexts-dir>
+    usage: check-kext-symbols.py <kernel-elf | kernel.symbols> <kexts-dir>
+
+The kernel side is either the kernel ELF or the kernel SDK's kernel.symbols
+(one defined global or weak symbol per line, from llvm-nm -g --defined-only;
+nextbsd-kernel#327).
 
 A kernel module links with undefined symbols left dangling; they are resolved
 at kldload time against the kernel and the modules already loaded. So a .ko can
@@ -111,7 +115,13 @@ def main():
         print(f"check-kext-symbols: kernel not found: {kernel}", file=sys.stderr)
         return 1
 
-    provided, _ = elf_symbols(kernel)
+    with open(kernel, "rb") as f:
+        is_elf = f.read(4) == b"\x7fELF"
+    if is_elf:
+        provided, _ = elf_symbols(kernel)
+    else:
+        with open(kernel) as f:
+            provided = {line.strip() for line in f if line.strip()}
     print(f"kernel {kernel}: {len(provided)} defined symbols")
 
     kexts = {}

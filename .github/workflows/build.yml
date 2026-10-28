@@ -21,6 +21,8 @@ on:
       - 'tools/gen-radeon-personalities.sh'
       - 'tools/fetch-kernel-sdk.sh'
       - 'tools/stamp-kernel-build-id.py'
+      - 'tools/set-osbundlerequired.py'
+      - 'data/osbundlerequired.tsv'
       - 'tests/kext-boot-test.sh'
       - 'tests/personalities-selftest.sh'
   pull_request:
@@ -45,6 +47,8 @@ on:
       - 'tools/gen-radeon-personalities.sh'
       - 'tools/fetch-kernel-sdk.sh'
       - 'tools/stamp-kernel-build-id.py'
+      - 'tools/set-osbundlerequired.py'
+      - 'data/osbundlerequired.tsv'
       - 'tests/kext-boot-test.sh'
       - 'tests/personalities-selftest.sh'
   workflow_dispatch:
@@ -1416,6 +1420,12 @@ jobs:
       # /System/Library/Extensions (nextbsd-kernel#326).
       - name: Stamp KERNEL-BUILD-ID into the graphics kexts
         run: python3 nbkm-tools/tools/stamp-kernel-build-id.py "$KERNEL_BUILD_ID" kexts
+
+      # OSBundleRequired by role, as Mac OS X 10.9 tags its kexts
+      # (nextbsd-kernel-extensions#4): display drivers and their libraries are
+      # Safe Boot, 3D-only accelerators carry no key.
+      - name: Tag OSBundleRequired by role
+        run: python3 nbkm-tools/tools/set-osbundlerequired.py nbkm-tools/data/osbundlerequired.tsv kexts
 
       - name: Upload graphics kexts artifact
         uses: actions/upload-artifact@v4

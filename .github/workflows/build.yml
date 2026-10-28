@@ -1984,3 +1984,16 @@ jobs:
           fail_on_unmatched_files: true
           files: |
             out/*.tar.gz
+
+      # A chain run continues to NVIDIA, which links against the graphics kexts
+      # just published. Only on chain runs (kernel-updated); after a merge here,
+      # NVIDIA is rebuilt by hand. Must succeed.
+      - name: Trigger the NVIDIA build
+        if: github.event_name == 'repository_dispatch'
+        run: |
+          gh api repos/nextbsd/nextbsd-kernel-extensions-nvidia/dispatches \
+            -f event_type=graphics-updated \
+            -f "client_payload[fbsd_sha]=${{ github.event.client_payload.fbsd_sha }}" \
+            -f "client_payload[sha]=${{ github.event.client_payload.sha }}"
+        env:
+          GH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}

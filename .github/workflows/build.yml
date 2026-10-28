@@ -19,7 +19,7 @@ on:
       - 'tools/gen-i915-personalities.sh'
       - 'tools/gen-amdgpu-personalities.sh'
       - 'tools/gen-radeon-personalities.sh'
-      - 'tools/prepare-kernel-src.sh'
+      - 'tools/fetch-kernel-sdk.sh'
       - 'tools/stamp-kernel-build-id.py'
       - 'tests/kext-boot-test.sh'
       - 'tests/personalities-selftest.sh'
@@ -43,7 +43,7 @@ on:
       - 'tools/gen-i915-personalities.sh'
       - 'tools/gen-amdgpu-personalities.sh'
       - 'tools/gen-radeon-personalities.sh'
-      - 'tools/prepare-kernel-src.sh'
+      - 'tools/fetch-kernel-sdk.sh'
       - 'tools/stamp-kernel-build-id.py'
       - 'tests/kext-boot-test.sh'
       - 'tests/personalities-selftest.sh'
@@ -85,13 +85,14 @@ env:
 
 jobs:
   # EXPERIMENTAL (graphics kext series, step 1): prove the drm-kmod graphics
-  # drivers BUILD against our patched kernel obj before we wrap them into kexts.
+  # drivers BUILD against our patched kernel before we wrap them into kexts.
   # `6.12-lts` is the drm-kmod branch matching FreeBSD releng/15.1 (the
   # graphics/drm-612-kmod port line; needs __FreeBSD_version >= 1500509, #336/#337).
   # drm-kmod is out-of-tree (its own
   # `make SYSDIR=...`, not the kernel's make.py), so we cross-build it inside
-  # FreeBSD's `buildenv` (which sets MACHINE + the cross compiler + exposes the
-  # kernel opt headers from /usr/obj). Compile-only: IOGraphics.kext + the
+  # FreeBSD's `buildenv` (which sets MACHINE + the cross compiler), with SYSDIR
+  # the kernel SDK's headers. Like the FreeBSD port, it passes no KERNBUILDDIR,
+  # so kmod.mk uses empty opt_*.h and no opt_global.h. Compile-only: IOGraphics.kext + the
   # per-vendor GPU kexts come once these .ko's exist. amd64 first. Independent
   # job — does NOT gate publish (publish needs: modules), so it can be iterated
   # freely while we settle the cross-build.
@@ -121,16 +122,30 @@ jobs:
         with:
           path: nbkm-tools
 
-      # The kernel obj tree from nextbsd-kernel's `continuous` release, and
-      # /usr/src prepared by that same commit's ci/prepare-src.sh, so these
-      # modules build from exactly the kernel's tree (nextbsd-kernel#325).
-      - name: Kernel obj tree + prepared source (same nextbsd-kernel commit)
+      # The kernel SDK from nextbsd-kernel's `continuous` release
+      # (nextbsd-kernel#327): the kernel's headers, generated options, exported
+      # symbols and KERNEL-BUILD-ID. No kernel source or obj tree, no relink
+      # (nextbsd-kernel-extensions#2). Leaves the ID in /tmp/kernel-build-id and
+      # KERNEL_SDK in the environment; every module below uses
+      # SYSDIR=$KERNEL_SDK/sys.
+      - name: Kernel SDK
         env:
           # Public reads only: the built-in github.token is enough, and fork
           # PRs (read-only token, no secrets) can run this step.
           GH_TOKEN: ${{ github.token }}
           DISPATCHED_SHA: ${{ github.event.client_payload.sha }}
-        run: nbkm-tools/tools/prepare-kernel-src.sh ${{ matrix.target }} ${{ matrix.target_arch }}
+        run: nbkm-tools/tools/fetch-kernel-sdk.sh ${{ matrix.target }}
+
+      # buildenv needs the host build tools (bmake, the legacy and bootstrap
+      # tools) that make.py builds into /usr/obj. They come from the toolchain
+      # image's freebsd-src, not from the kernel.
+      - name: Host build tools
+        run: |
+          cd /usr/src
+          ./tools/build/make.py \
+            --cross-bindir="${CROSS_BINDIR}" \
+            TARGET=${{ matrix.target }} TARGET_ARCH=${{ matrix.target_arch }} \
+            kernel-toolchain -j"$(nproc)"
 
       # The KERNEL-BUILD-ID this job built against, for the publish job, which
       # requires every job on an arch to agree before it stamps and ships.
@@ -141,7 +156,7 @@ jobs:
           path: /tmp/kernel-build-id/KERNEL-BUILD-ID
           if-no-files-found: error
 
-      - name: Build drm-kmod (${{ env.DRM_KMOD_REF }}) against the kernel obj
+      - name: Build drm-kmod (${{ env.DRM_KMOD_REF }}) against the kernel SDK
         run: |
           git clone --depth 1 --branch "${DRM_KMOD_REF}" \
             https://github.com/freebsd/drm-kmod.git /tmp/drm-kmod
@@ -172,7 +187,7 @@ jobs:
           ./tools/build/make.py \
             --cross-bindir="${CROSS_BINDIR}" \
             TARGET=${{ matrix.target }} TARGET_ARCH=${{ matrix.target_arch }} KERNCONF=NEXTBSD \
-            buildenv BUILDENV_SHELL="make -C /tmp/drm-kmod -j${NPROC} SYSDIR=/usr/src/sys"
+            buildenv BUILDENV_SHELL="make -C /tmp/drm-kmod -j${NPROC} SYSDIR=${KERNEL_SDK}/sys"
 
       - name: Collect + list drm-kmod .ko output
         run: |
@@ -254,7 +269,7 @@ jobs:
           ./tools/build/make.py \
             --cross-bindir="${CROSS_BINDIR}" \
             TARGET=${{ matrix.target }} TARGET_ARCH=${{ matrix.target_arch }} KERNCONF=NEXTBSD \
-            buildenv BUILDENV_SHELL="make -C /tmp/drm-kmod/drm_extra_helpers -j${NPROC} SYSDIR=/usr/src/sys" \
+            buildenv BUILDENV_SHELL="make -C /tmp/drm-kmod/drm_extra_helpers -j${NPROC} SYSDIR=${KERNEL_SDK}/sys" \
             2>&1 | tee /tmp/extra-helpers-build.log
           # Stage next to the drm-kmod .ko's so the wrap step finds it (that
           # step's collect ran before this one).
@@ -312,7 +327,7 @@ jobs:
           ./tools/build/make.py \
             --cross-bindir="${CROSS_BINDIR}" \
             TARGET=${{ matrix.target }} TARGET_ARCH=${{ matrix.target_arch }} KERNCONF=NEXTBSD \
-            buildenv BUILDENV_SHELL="make -C /tmp/drm-kmod/bochs -j${NPROC} SYSDIR=/usr/src/sys" \
+            buildenv BUILDENV_SHELL="make -C /tmp/drm-kmod/bochs -j${NPROC} SYSDIR=${KERNEL_SDK}/sys" \
             2>&1 | tee /tmp/bochs-build.log
           cp /tmp/drm-kmod/bochs/bochs.ko /tmp/ko-out/ 2>/dev/null || true
 
@@ -375,7 +390,7 @@ jobs:
           ./tools/build/make.py \
             --cross-bindir="${CROSS_BINDIR}" \
             TARGET=${{ matrix.target }} TARGET_ARCH=${{ matrix.target_arch }} KERNCONF=NEXTBSD \
-            buildenv BUILDENV_SHELL="make -C /tmp/drm-kmod/vboxvideo -j${NPROC} SYSDIR=/usr/src/sys" \
+            buildenv BUILDENV_SHELL="make -C /tmp/drm-kmod/vboxvideo -j${NPROC} SYSDIR=${KERNEL_SDK}/sys" \
             2>&1 | tee /tmp/vboxvideo-build.log
           cp /tmp/drm-kmod/vboxvideo/vboxvideo.ko /tmp/ko-out/ 2>/dev/null || true
 
@@ -441,7 +456,7 @@ jobs:
           ./tools/build/make.py \
             --cross-bindir="${CROSS_BINDIR}" \
             TARGET=${{ matrix.target }} TARGET_ARCH=${{ matrix.target_arch }} KERNCONF=NEXTBSD \
-            buildenv BUILDENV_SHELL="make -C /tmp/drm-kmod/linuxkpi_virtio -j${NPROC} SYSDIR=/usr/src/sys" \
+            buildenv BUILDENV_SHELL="make -C /tmp/drm-kmod/linuxkpi_virtio -j${NPROC} SYSDIR=${KERNEL_SDK}/sys" \
             2>&1 | tee /tmp/linux-virtio-build.log
           cp /tmp/drm-kmod/linuxkpi_virtio/linux_virtio.ko /tmp/ko-out/ 2>/dev/null || true
 
@@ -513,7 +528,7 @@ jobs:
           ./tools/build/make.py \
             --cross-bindir="${CROSS_BINDIR}" \
             TARGET=${{ matrix.target }} TARGET_ARCH=${{ matrix.target_arch }} KERNCONF=NEXTBSD \
-            buildenv BUILDENV_SHELL="make -C /tmp/drm-kmod/drm_dma_helpers -j${NPROC} SYSDIR=/usr/src/sys" \
+            buildenv BUILDENV_SHELL="make -C /tmp/drm-kmod/drm_dma_helpers -j${NPROC} SYSDIR=${KERNEL_SDK}/sys" \
             2>&1 | tee /tmp/dma-helpers-build.log
           cp /tmp/drm-kmod/drm_dma_helpers/drm_dma_helpers.ko /tmp/ko-out/ 2>/dev/null || true
 
@@ -576,7 +591,7 @@ jobs:
           ./tools/build/make.py \
             --cross-bindir="${CROSS_BINDIR}" \
             TARGET=${{ matrix.target }} TARGET_ARCH=${{ matrix.target_arch }} KERNCONF=NEXTBSD \
-            buildenv BUILDENV_SHELL="make -C /tmp/drm-kmod/bcm_dvp -j${NPROC} SYSDIR=/usr/src/sys" \
+            buildenv BUILDENV_SHELL="make -C /tmp/drm-kmod/bcm_dvp -j${NPROC} SYSDIR=${KERNEL_SDK}/sys" \
             > /tmp/dvp-build.log 2>&1 || true
           # Append to the probe log, which IS uploaded as an artifact. The job
           # log is not readable until the whole run completes, so a failure here
@@ -607,7 +622,7 @@ jobs:
           ./tools/build/make.py \
             --cross-bindir="${CROSS_BINDIR}" \
             TARGET=${{ matrix.target }} TARGET_ARCH=${{ matrix.target_arch }} KERNCONF=NEXTBSD \
-            buildenv BUILDENV_SHELL="make -C /tmp/drm-kmod/rpi_fw_clocks -j${NPROC} SYSDIR=/usr/src/sys"
+            buildenv BUILDENV_SHELL="make -C /tmp/drm-kmod/rpi_fw_clocks -j${NPROC} SYSDIR=${KERNEL_SDK}/sys"
           cp /tmp/drm-kmod/rpi_fw_clocks/rpi_fw_clocks.ko /tmp/ko-out/
           ls -l /tmp/ko-out/rpi_fw_clocks.ko && echo "    *** rpi_fw_clocks.ko BUILT ***"
 
@@ -647,7 +662,7 @@ jobs:
           ./tools/build/make.py \
             --cross-bindir="${CROSS_BINDIR}" \
             TARGET=${{ matrix.target }} TARGET_ARCH=${{ matrix.target_arch }} KERNCONF=NEXTBSD \
-            buildenv BUILDENV_SHELL="make -k -C /tmp/drm-kmod/vc4_kms -j${NPROC} SYSDIR=/usr/src/sys" \
+            buildenv BUILDENV_SHELL="make -k -C /tmp/drm-kmod/vc4_kms -j${NPROC} SYSDIR=${KERNEL_SDK}/sys" \
             > /tmp/vc4kms-probe.log 2>&1
           echo "build exit: $?"
           exit 0
@@ -716,7 +731,7 @@ jobs:
           ./tools/build/make.py \
             --cross-bindir="${CROSS_BINDIR}" \
             TARGET=${{ matrix.target }} TARGET_ARCH=${{ matrix.target_arch }} KERNCONF=NEXTBSD \
-            buildenv BUILDENV_SHELL="make -C /tmp/drm-kmod/bcm2712_pm -j${NPROC} SYSDIR=/usr/src/sys" \
+            buildenv BUILDENV_SHELL="make -C /tmp/drm-kmod/bcm2712_pm -j${NPROC} SYSDIR=${KERNEL_SDK}/sys" \
             > /tmp/pm-build.log 2>&1 || true
           { echo "=== bcm2712_pm build ==="; cat /tmp/pm-build.log; } >> /tmp/v3d-probe.log 2>/dev/null || true
           grep -E "error:" /tmp/pm-build.log | head -10 || true
@@ -748,7 +763,7 @@ jobs:
           ./tools/build/make.py \
             --cross-bindir="${CROSS_BINDIR}" \
             TARGET=${{ matrix.target }} TARGET_ARCH=${{ matrix.target_arch }} KERNCONF=NEXTBSD \
-            buildenv BUILDENV_SHELL="make -k -C /tmp/drm-kmod/v3d -j${NPROC} SYSDIR=/usr/src/sys" \
+            buildenv BUILDENV_SHELL="make -k -C /tmp/drm-kmod/v3d -j${NPROC} SYSDIR=${KERNEL_SDK}/sys" \
             > /tmp/v3d-probe.log 2>&1
           echo "build exit: $?"
           cp /tmp/drm-kmod/v3d/v3d.ko /tmp/ko-out/ 2>/dev/null || true
@@ -815,7 +830,7 @@ jobs:
           ./tools/build/make.py \
             --cross-bindir="${CROSS_BINDIR}" \
             TARGET=${{ matrix.target }} TARGET_ARCH=${{ matrix.target_arch }} KERNCONF=NEXTBSD \
-            buildenv BUILDENV_SHELL="make -C /tmp/drm-kmod/drm_shmem_helpers -j${NPROC} SYSDIR=/usr/src/sys" \
+            buildenv BUILDENV_SHELL="make -C /tmp/drm-kmod/drm_shmem_helpers -j${NPROC} SYSDIR=${KERNEL_SDK}/sys" \
             2>&1 | tee /tmp/shmem-helpers-build.log
           cp /tmp/drm-kmod/drm_shmem_helpers/drm_shmem_helpers.ko /tmp/ko-out/ 2>/dev/null || true
 
@@ -876,7 +891,7 @@ jobs:
           ./tools/build/make.py \
             --cross-bindir="${CROSS_BINDIR}" \
             TARGET=${{ matrix.target }} TARGET_ARCH=${{ matrix.target_arch }} KERNCONF=NEXTBSD \
-            buildenv BUILDENV_SHELL="make -C /tmp/drm-kmod/virtio_gpu_drm -j${NPROC} SYSDIR=/usr/src/sys" \
+            buildenv BUILDENV_SHELL="make -C /tmp/drm-kmod/virtio_gpu_drm -j${NPROC} SYSDIR=${KERNEL_SDK}/sys" \
             2>&1 | tee /tmp/virtio-gpu-build.log
           cp /tmp/drm-kmod/virtio_gpu_drm/virtio_gpu_drm.ko /tmp/ko-out/ 2>/dev/null || true
 
@@ -1281,9 +1296,8 @@ jobs:
       - name: Check every kext resolves (no ENOEXEC at kldload)
         run: |
           set -eu
-          KERN=$(find /usr/obj -type f -name kernel | head -1)
-          test -n "$KERN" || { echo "kernel not found under /usr/obj" >&2; exit 1; }
-          python3 nbkm-tools/tools/check-kext-symbols.py "$KERN" kexts
+          # The SDK's exported-symbol list stands in for the kernel ELF.
+          python3 nbkm-tools/tools/check-kext-symbols.py "$KERNEL_SDK/kernel.symbols" kexts
 
       - name: Validate graphics kext Info.plists + dependency chain
         run: |
@@ -1508,7 +1522,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: nextbsd/nextbsd-ci
-          ref: v0.3.6
+          ref: v0.3.7
           path: nextbsd-ci
 
       - name: Assemble the kext image (shared nextbsd-ci assembly)
@@ -1570,7 +1584,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: nextbsd/nextbsd-ci
-          ref: v0.3.6
+          ref: v0.3.7
           path: nextbsd-ci
 
       - name: Install qemu + expect + UEFI firmware

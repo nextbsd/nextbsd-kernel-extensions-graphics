@@ -969,13 +969,13 @@ jobs:
             # 6.12 (#337): i915 ids come from the driver's pciidlist[] in i915_pci.c,
             # preprocessor-expanded via the header (the flat INTEL_VGA_DEVICE(0x..)
             # literals are gone). gen-i915 now takes both files.
-            "$T/gen-i915-personalities.sh"   "$I915H" "$I915C" org.nextbsd.kext.intelgraphics IntelGraphics  > pers/IntelGraphics.iokitpersonalities
+            "$T/gen-i915-personalities.sh"   "$I915H" "$I915C" org.nextbsd.driver.IntelGraphics IntelGraphics  > pers/IntelGraphics.iokitpersonalities
             # Count-band gate: pciidlist expansion yields ~364 ids on 6.12-lts. An
             # empty/tiny table means the extraction silently broke on a header change.
             NIG=$(grep -oE '0x[0-9a-f]{8}' pers/IntelGraphics.iokitpersonalities | sort -u | wc -l | tr -d ' ')
             [ "$NIG" -ge 300 ] && [ "$NIG" -le 450 ] || { echo "i915 id count $NIG out of band [300,450] — pciidlist extraction likely broke" >&2; exit 1; }
           fi
-          "$T/gen-amdgpu-personalities.sh" "$AMDC"  org.nextbsd.kext.amdgraphics   AMDGraphics    > pers/AMDGraphics.iokitpersonalities
+          "$T/gen-amdgpu-personalities.sh" "$AMDC"  org.nextbsd.driver.AMDGraphics   AMDGraphics    > pers/AMDGraphics.iokitpersonalities
           # De-overlap: radeon yields SI/CIK to amdgpu (this build compiles amdgpu
           # WITH CONFIG_DRM_AMDGPU_SI/_CIK), so feed amdgpu's match words to -x.
           # The -x de-overlap exists because amdgpu CLAIMS the SI/CIK ids on this
@@ -983,20 +983,20 @@ jobs:
           # not also claim them. Both kexts are amd64-only, so this whole
           # pairing is too -- see the wrap step for why arm64 ships neither.
           grep -oE '0x[0-9a-f]{8}' pers/AMDGraphics.iokitpersonalities | sort -u > pers/amdgpu-match.txt
-          "$T/gen-radeon-personalities.sh" -x pers/amdgpu-match.txt "$DRMP" org.nextbsd.kext.radeongraphics RadeonGraphics > pers/RadeonGraphics.iokitpersonalities
+          "$T/gen-radeon-personalities.sh" -x pers/amdgpu-match.txt "$DRMP" org.nextbsd.driver.RadeonGraphics RadeonGraphics > pers/RadeonGraphics.iokitpersonalities
           # bochs (graphics kext series): ids come from the vendored driver's own
           # bochs_pci_tbl[]. Skipped silently when the experimental build did not
           # produce a .ko, so this step stays green while that is iterated.
           if [ -f /tmp/ko-out/bochs.ko ]; then
             chmod +x "$T/gen-bochs-personalities.sh"
             "$T/gen-bochs-personalities.sh" /tmp/drm-kmod/drivers/gpu/drm/tiny/bochs.c \
-                org.nextbsd.kext.bochsgraphics BochsGraphics > pers/BochsGraphics.iokitpersonalities
+                org.nextbsd.driver.BochsGraphics BochsGraphics > pers/BochsGraphics.iokitpersonalities
           fi
           # vboxvideo: same treatment, ids from its own pciidlist[] (80ee:beef).
           if [ -f /tmp/ko-out/vboxvideo.ko ]; then
             chmod +x "$T/gen-vboxvideo-personalities.sh"
             "$T/gen-vboxvideo-personalities.sh" /tmp/drm-kmod/drivers/gpu/drm/vboxvideo/vbox_drv.c \
-                org.nextbsd.kext.vboxgraphics VBoxGraphics > pers/VBoxGraphics.iokitpersonalities
+                org.nextbsd.driver.VBoxGraphics VBoxGraphics > pers/VBoxGraphics.iokitpersonalities
           fi
           fi
           # virtio-gpu: generated on BOTH arches, which is why it sits outside
@@ -1007,7 +1007,7 @@ jobs:
           if [ -f /tmp/ko-out/virtio_gpu_drm.ko ]; then
             chmod +x "$T/gen-virtio-gpu-personalities.sh"
             "$T/gen-virtio-gpu-personalities.sh" nbkm-tools/graphics/include/linux/virtio_ids.h \
-                org.nextbsd.kext.virtiographics VirtIOGraphics > pers/VirtIOGraphics.iokitpersonalities
+                org.nextbsd.driver.VirtIOGraphics VirtIOGraphics > pers/VirtIOGraphics.iokitpersonalities
           fi
           # vc4 / BCM2712 (#65). These two are checked into the repo instead of
           # being generated, which is the opposite of every generator above, and
@@ -1048,18 +1048,18 @@ jobs:
           KO=/tmp/ko-out
           # drm core family. Load order dmabuf -> drm -> ttm; linuxkpi is baked in
           # the kernel (like the iwlwifi kext), so it needs no OSBundleLibraries.
-          "$K" -o "$O" "$KO/dmabuf.ko" DMABuf org.nextbsd.kext.dmabuf
-          "$K" -o "$O" -l org.nextbsd.kext.dmabuf "$KO/drm.ko" IOGraphics org.nextbsd.kext.iographics
-          "$K" -o "$O" -l org.nextbsd.kext.iographics "$KO/ttm.ko" TTM org.nextbsd.kext.ttm
+          "$K" -o "$O" "$KO/dmabuf.ko" DMABuf org.nextbsd.kpi.DMABuf
+          "$K" -o "$O" -l org.nextbsd.kpi.DMABuf "$KO/drm.ko" IOGraphics org.nextbsd.kpi.IOGraphics
+          "$K" -o "$O" -l org.nextbsd.kpi.IOGraphics "$KO/ttm.ko" TTM org.nextbsd.kpi.TTM
           # Per-vendor GPU kexts: depend on the drm core, carry their own device-id
           # match table. (Firmware bundling — ko2kext -f — is the next step.)
           # IntelGraphics only where i915 exists (amd64); see the personalities
           # step. Guarded on the .ko rather than on matrix.target so the two
           # cannot drift apart.
           if [ -f "$KO/i915kms.ko" ]; then
-            "$K" -o "$O" -l org.nextbsd.kext.iographics -l org.nextbsd.kext.ttm \
+            "$K" -o "$O" -l org.nextbsd.kpi.IOGraphics -l org.nextbsd.kpi.TTM \
                  -p pers/IntelGraphics.iokitpersonalities \
-                 "$KO/i915kms.ko" IntelGraphics org.nextbsd.kext.intelgraphics
+                 "$KO/i915kms.ko" IntelGraphics org.nextbsd.driver.IntelGraphics
           fi
           # arm64 ships the DRM core and helpers ONLY. Neither AMD kext is
           # packaged there, for two different reasons:
@@ -1096,38 +1096,38 @@ jobs:
           # slot, which an ARM VM does not present. amd64 ships both kexts
           # exactly as before.
           if [ "${{ matrix.target }}" = "amd64" ]; then
-            "$K" -o "$O" -l org.nextbsd.kext.iographics -l org.nextbsd.kext.ttm -l org.nextbsd.kext.dmabuf \
+            "$K" -o "$O" -l org.nextbsd.kpi.IOGraphics -l org.nextbsd.kpi.TTM -l org.nextbsd.kpi.DMABuf \
                  -p pers/AMDGraphics.iokitpersonalities \
-                 "$KO/amdgpu.ko" AMDGraphics org.nextbsd.kext.amdgraphics
+                 "$KO/amdgpu.ko" AMDGraphics org.nextbsd.driver.AMDGraphics
           else
             echo "==> AMDGraphics.kext SKIPPED on ${{ matrix.target }}: upstream amdgpu.ko is unloadable there (DRM_AMD_DC_FP is amd64-only)"
           fi
           if [ "${{ matrix.target }}" = "amd64" ]; then
-            "$K" -o "$O" -l org.nextbsd.kext.iographics -l org.nextbsd.kext.ttm \
+            "$K" -o "$O" -l org.nextbsd.kpi.IOGraphics -l org.nextbsd.kpi.TTM \
                  -p pers/RadeonGraphics.iokitpersonalities \
-                 "$KO/radeonkms.ko" RadeonGraphics org.nextbsd.kext.radeongraphics
+                 "$KO/radeonkms.ko" RadeonGraphics org.nextbsd.driver.RadeonGraphics
           else
             echo "==> RadeonGraphics.kext SKIPPED on ${{ matrix.target }}: matches only discrete PCIe cards, which an ARM VM does not present"
           fi
           # Graphics kext series: the shared helper module first (bochs depends
           # on it), then bochs itself with its device-match personalities.
           if [ -f "$KO/drm_extra_helpers.ko" ]; then
-            "$K" -o "$O" -l org.nextbsd.kext.iographics -l org.nextbsd.kext.ttm \
-                 "$KO/drm_extra_helpers.ko" IOGraphicsExtras org.nextbsd.kext.iographicsextras
+            "$K" -o "$O" -l org.nextbsd.kpi.IOGraphics -l org.nextbsd.kpi.TTM \
+                 "$KO/drm_extra_helpers.ko" IOGraphicsExtras org.nextbsd.kpi.IOGraphicsExtras
           fi
           if [ -f "$KO/bochs.ko" ] && [ -f pers/BochsGraphics.iokitpersonalities ]; then
-            "$K" -o "$O" -l org.nextbsd.kext.iographics -l org.nextbsd.kext.ttm \
-                 -l org.nextbsd.kext.iographicsextras \
+            "$K" -o "$O" -l org.nextbsd.kpi.IOGraphics -l org.nextbsd.kpi.TTM \
+                 -l org.nextbsd.kpi.IOGraphicsExtras \
                  -p pers/BochsGraphics.iokitpersonalities \
-                 "$KO/bochs.ko" BochsGraphics org.nextbsd.kext.bochsgraphics
+                 "$KO/bochs.ko" BochsGraphics org.nextbsd.driver.BochsGraphics
           fi
           # vboxvideo: identical dependency shape to bochs -- both are VRAM-helper
           # drivers, so both link IOGraphicsExtras.
           if [ -f "$KO/vboxvideo.ko" ] && [ -f pers/VBoxGraphics.iokitpersonalities ]; then
-            "$K" -o "$O" -l org.nextbsd.kext.iographics -l org.nextbsd.kext.ttm \
-                 -l org.nextbsd.kext.iographicsextras \
+            "$K" -o "$O" -l org.nextbsd.kpi.IOGraphics -l org.nextbsd.kpi.TTM \
+                 -l org.nextbsd.kpi.IOGraphicsExtras \
                  -p pers/VBoxGraphics.iokitpersonalities \
-                 "$KO/vboxvideo.ko" VBoxGraphics org.nextbsd.kext.vboxgraphics
+                 "$KO/vboxvideo.ko" VBoxGraphics org.nextbsd.driver.VBoxGraphics
           fi
           # virtio-gpu, on BOTH arches -- the only graphics driver here that is
           # not amd64-only, because it is the sole KMS candidate an arm64 VM
@@ -1145,12 +1145,12 @@ jobs:
           # why it sidesteps the fictitious-range problem. Linking TTM here
           # would declare a dependency the driver does not have.
           if [ -f "$KO/linux_virtio.ko" ]; then
-            "$K" -o "$O" -l org.nextbsd.kext.dmabuf \
-                 "$KO/linux_virtio.ko" LinuxVirtIO org.nextbsd.kext.linuxvirtio
+            "$K" -o "$O" -l org.nextbsd.kpi.DMABuf \
+                 "$KO/linux_virtio.ko" LinuxVirtIO org.nextbsd.kpi.LinuxVirtIO
           fi
           if [ -f "$KO/drm_shmem_helpers.ko" ]; then
-            "$K" -o "$O" -l org.nextbsd.kext.iographics -l org.nextbsd.kext.dmabuf \
-                 "$KO/drm_shmem_helpers.ko" IOGraphicsShmem org.nextbsd.kext.iographicsshmem
+            "$K" -o "$O" -l org.nextbsd.kpi.IOGraphics -l org.nextbsd.kpi.DMABuf \
+                 "$KO/drm_shmem_helpers.ko" IOGraphicsShmem org.nextbsd.kpi.IOGraphicsShmem
           fi
           # IOGraphicsDMA is the contiguous-DMA GEM layer (nextbsd-kernel#176:
           # the Raspberry Pi display path). Wrapped here for the same reason as
@@ -1161,8 +1161,8 @@ jobs:
           # the same reasons -- drm core plus dmabuf, and NO TTM, since these
           # buffers are contiguous system memory rather than a device BAR.
           if [ -f "$KO/drm_dma_helpers.ko" ]; then
-            "$K" -o "$O" -l org.nextbsd.kext.iographics -l org.nextbsd.kext.dmabuf \
-                 "$KO/drm_dma_helpers.ko" IOGraphicsDMA org.nextbsd.kext.iographicsdma
+            "$K" -o "$O" -l org.nextbsd.kpi.IOGraphics -l org.nextbsd.kpi.DMABuf \
+                 "$KO/drm_dma_helpers.ko" IOGraphicsDMA org.nextbsd.kpi.IOGraphicsDMA
           fi
           # VideoCore6KMS -- the full VC4 KMS display pipeline for BCM2712
           # (#51). It programs the HVS, pixelvalves and HDMI PHY directly,
@@ -1185,13 +1185,13 @@ jobs:
           #
           # arm64 only: this is a BCM2712 part.
           if [ -f "$KO/vc4_kms.ko" ] && [ -f pers/VideoCore6KMS.iokitpersonalities ]; then
-            "$K" -o "$O" -l org.nextbsd.kext.iographics -l org.nextbsd.kext.dmabuf \
-                 -l org.nextbsd.kext.iographicsdma \
-                 -l org.nextbsd.kext.iographicsextras \
-                 -l org.nextbsd.kext.bcmdvp \
-                 -l org.nextbsd.kext.rpifirmwareclocks \
+            "$K" -o "$O" -l org.nextbsd.kpi.IOGraphics -l org.nextbsd.kpi.DMABuf \
+                 -l org.nextbsd.kpi.IOGraphicsDMA \
+                 -l org.nextbsd.kpi.IOGraphicsExtras \
+                 -l org.nextbsd.driver.BcmDVP \
+                 -l org.nextbsd.driver.RpiFirmwareClocks \
                  -p pers/VideoCore6KMS.iokitpersonalities \
-                 "$KO/vc4_kms.ko" VideoCore6KMS org.nextbsd.kext.videocore6kms
+                 "$KO/vc4_kms.ko" VideoCore6KMS org.nextbsd.driver.VideoCore6KMS
           fi
           # RpiFirmwareClocks -- the provider for /soc/firmware/clocks (#51).
           # Not a graphics driver, but the vc4 display pipeline cannot produce
@@ -1217,10 +1217,10 @@ jobs:
           # what guarantees it is attached BEFORE vc4_hdmi looks for resets.
           if [ -f "$KO/bcm_dvp.ko" ] && [ -f pers/BcmDVP.iokitpersonalities ]; then
             "$K" -o "$O" -p pers/BcmDVP.iokitpersonalities \
-                 "$KO/bcm_dvp.ko" BcmDVP org.nextbsd.kext.bcmdvp
+                 "$KO/bcm_dvp.ko" BcmDVP org.nextbsd.driver.BcmDVP
           fi
           if [ -f "$KO/rpi_fw_clocks.ko" ]; then
-            "$K" -o "$O" "$KO/rpi_fw_clocks.ko" RpiFirmwareClocks org.nextbsd.kext.rpifirmwareclocks
+            "$K" -o "$O" "$KO/rpi_fw_clocks.ko" RpiFirmwareClocks org.nextbsd.driver.RpiFirmwareClocks
           fi
           # V3D -- the BCM2712 GPU / render node (#66). Separate from the
           # display driver: on 2712 the 3D core is its own device, unlike
@@ -1238,7 +1238,7 @@ jobs:
           # newbus OFW reset provider, no LinuxKPI, no kext dependencies.
           if [ -f "$KO/bcm2712_pm.ko" ] && [ -f pers/BcmPM.iokitpersonalities ]; then
             "$K" -o "$O" -p pers/BcmPM.iokitpersonalities \
-                 "$KO/bcm2712_pm.ko" BcmPM org.nextbsd.kext.bcmpm
+                 "$KO/bcm2712_pm.ko" BcmPM org.nextbsd.driver.BcmPM
           fi
           # The last -l is an ORDERING edge, not a symbol dependency, and it
           # fixes a bug that only appeared once this kext started shipping.
@@ -1269,21 +1269,21 @@ jobs:
           # over a nondeterministic device tree rather than fixing it, and every
           # other consumer of card0 would still be rolling dice.
           if [ -f "$KO/v3d.ko" ] && [ -f pers/V3D.iokitpersonalities ]; then
-            "$K" -o "$O" -l org.nextbsd.kext.iographics -l org.nextbsd.kext.dmabuf \
-                 -l org.nextbsd.kext.iographicsshmem \
-                 -l org.nextbsd.kext.rpifirmwareclocks \
-                 -l org.nextbsd.kext.bcmpm \
-                 -l org.nextbsd.kext.videocore6kms \
+            "$K" -o "$O" -l org.nextbsd.kpi.IOGraphics -l org.nextbsd.kpi.DMABuf \
+                 -l org.nextbsd.kpi.IOGraphicsShmem \
+                 -l org.nextbsd.driver.RpiFirmwareClocks \
+                 -l org.nextbsd.driver.BcmPM \
+                 -l org.nextbsd.driver.VideoCore6KMS \
                  -p pers/V3D.iokitpersonalities \
-                 "$KO/v3d.ko" V3D org.nextbsd.kext.v3d
+                 "$KO/v3d.ko" V3D org.nextbsd.driver.V3D
           fi
           if [ -f "$KO/virtio_gpu_drm.ko" ] && [ -f pers/VirtIOGraphics.iokitpersonalities ]; then
-            "$K" -o "$O" -l org.nextbsd.kext.iographics -l org.nextbsd.kext.dmabuf \
-                 -l org.nextbsd.kext.iographicsextras \
-                 -l org.nextbsd.kext.iographicsshmem \
-                 -l org.nextbsd.kext.linuxvirtio \
+            "$K" -o "$O" -l org.nextbsd.kpi.IOGraphics -l org.nextbsd.kpi.DMABuf \
+                 -l org.nextbsd.kpi.IOGraphicsExtras \
+                 -l org.nextbsd.kpi.IOGraphicsShmem \
+                 -l org.nextbsd.kpi.LinuxVirtIO \
                  -p pers/VirtIOGraphics.iokitpersonalities \
-                 "$KO/virtio_gpu_drm.ko" VirtIOGraphics org.nextbsd.kext.virtiographics
+                 "$KO/virtio_gpu_drm.ko" VirtIOGraphics org.nextbsd.driver.VirtIOGraphics
           fi
           echo "=== built kexts ==="
           for d in "$O"/*.kext; do echo "  $(basename "$d") ($(du -sh "$d" | cut -f1))"; done
@@ -1309,9 +1309,9 @@ jobs:
           import plistlib
           # name -> (bundle-id, vendor-or-None, required OSBundleLibraries)
           checks = {
-            'DMABuf':         ('org.nextbsd.kext.dmabuf', None, []),
-            'IOGraphics':     ('org.nextbsd.kext.iographics', None, ['org.nextbsd.kext.dmabuf']),
-            'TTM':            ('org.nextbsd.kext.ttm', None, ['org.nextbsd.kext.iographics']),
+            'DMABuf':         ('org.nextbsd.kpi.DMABuf', None, []),
+            'IOGraphics':     ('org.nextbsd.kpi.IOGraphics', None, ['org.nextbsd.kpi.DMABuf']),
+            'TTM':            ('org.nextbsd.kpi.TTM', None, ['org.nextbsd.kpi.IOGraphics']),
           }
           import os
           # IntelGraphics is amd64-only (drm-kmod builds i915 for amd64/i386
@@ -1320,14 +1320,14 @@ jobs:
           # AMDGraphics is absent on arm64 (see the wrap step: upstream amdgpu.ko
           # cannot load there), so it is checked only when it shipped.
           if os.path.exists('kexts/RadeonGraphics.kext'):
-              checks['RadeonGraphics'] = ('org.nextbsd.kext.radeongraphics', '1002',
-                                          ['org.nextbsd.kext.iographics','org.nextbsd.kext.ttm'])
+              checks['RadeonGraphics'] = ('org.nextbsd.driver.RadeonGraphics', '1002',
+                                          ['org.nextbsd.kpi.IOGraphics','org.nextbsd.kpi.TTM'])
           if os.path.exists('kexts/AMDGraphics.kext'):
-              checks['AMDGraphics'] = ('org.nextbsd.kext.amdgraphics', '1002',
-                                       ['org.nextbsd.kext.iographics','org.nextbsd.kext.ttm','org.nextbsd.kext.dmabuf'])
+              checks['AMDGraphics'] = ('org.nextbsd.driver.AMDGraphics', '1002',
+                                       ['org.nextbsd.kpi.IOGraphics','org.nextbsd.kpi.TTM','org.nextbsd.kpi.DMABuf'])
           if os.path.exists('kexts/IntelGraphics.kext'):
-              checks['IntelGraphics'] = ('org.nextbsd.kext.intelgraphics', '8086',
-                                         ['org.nextbsd.kext.iographics','org.nextbsd.kext.ttm'])
+              checks['IntelGraphics'] = ('org.nextbsd.driver.IntelGraphics', '8086',
+                                         ['org.nextbsd.kpi.IOGraphics','org.nextbsd.kpi.TTM'])
           # Graphics kext series. Guarded on existence so the gate stays green
           # while the experimental builds are iterated. IOGraphicsExtras carries
           # no personalities (it is a library other drivers link against);
@@ -1336,35 +1336,35 @@ jobs:
           # bochs-display) and 4321:1111 (Simics) -- so no single vendor suffix
           # describes its id list.
           if os.path.exists('kexts/IOGraphicsExtras.kext'):
-              checks['IOGraphicsExtras'] = ('org.nextbsd.kext.iographicsextras', None,
-                                            ['org.nextbsd.kext.iographics','org.nextbsd.kext.ttm'])
+              checks['IOGraphicsExtras'] = ('org.nextbsd.kpi.IOGraphicsExtras', None,
+                                            ['org.nextbsd.kpi.IOGraphics','org.nextbsd.kpi.TTM'])
           if os.path.exists('kexts/BochsGraphics.kext'):
-              checks['BochsGraphics'] = ('org.nextbsd.kext.bochsgraphics', None,
-                                         ['org.nextbsd.kext.iographics','org.nextbsd.kext.ttm',
-                                          'org.nextbsd.kext.iographicsextras'])
+              checks['BochsGraphics'] = ('org.nextbsd.driver.BochsGraphics', None,
+                                         ['org.nextbsd.kpi.IOGraphics','org.nextbsd.kpi.TTM',
+                                          'org.nextbsd.kpi.IOGraphicsExtras'])
           # VBoxGraphics DOES go through the `vendor` rule, unlike BochsGraphics:
           # its whole table is one Oracle id (80ee:beef), so the vendor suffix
           # describes it exactly.
           if os.path.exists('kexts/VBoxGraphics.kext'):
-              checks['VBoxGraphics'] = ('org.nextbsd.kext.vboxgraphics', '80ee',
-                                        ['org.nextbsd.kext.iographics','org.nextbsd.kext.ttm',
-                                         'org.nextbsd.kext.iographicsextras'])
+              checks['VBoxGraphics'] = ('org.nextbsd.driver.VBoxGraphics', '80ee',
+                                        ['org.nextbsd.kpi.IOGraphics','org.nextbsd.kpi.TTM',
+                                         'org.nextbsd.kpi.IOGraphicsExtras'])
           # The virtio-gpu trio, present on both arches. Note the deps: no TTM,
           # because these are swap-backed rather than VRAM-backed, and asserting
           # the absence is as much the point as asserting the presence -- a
           # spurious TTM edge would be a dependency the driver does not have.
           if os.path.exists('kexts/LinuxVirtIO.kext'):
-              checks['LinuxVirtIO'] = ('org.nextbsd.kext.linuxvirtio', None,
-                                       ['org.nextbsd.kext.dmabuf'])
+              checks['LinuxVirtIO'] = ('org.nextbsd.kpi.LinuxVirtIO', None,
+                                       ['org.nextbsd.kpi.DMABuf'])
           if os.path.exists('kexts/IOGraphicsShmem.kext'):
-              checks['IOGraphicsShmem'] = ('org.nextbsd.kext.iographicsshmem', None,
-                                           ['org.nextbsd.kext.iographics','org.nextbsd.kext.dmabuf'])
+              checks['IOGraphicsShmem'] = ('org.nextbsd.kpi.IOGraphicsShmem', None,
+                                           ['org.nextbsd.kpi.IOGraphics','org.nextbsd.kpi.DMABuf'])
           if os.path.exists('kexts/VirtIOGraphics.kext'):
-              checks['VirtIOGraphics'] = ('org.nextbsd.kext.virtiographics', '1af4',
-                                          ['org.nextbsd.kext.iographics','org.nextbsd.kext.dmabuf',
-                                           'org.nextbsd.kext.iographicsextras',
-                                           'org.nextbsd.kext.iographicsshmem',
-                                           'org.nextbsd.kext.linuxvirtio'])
+              checks['VirtIOGraphics'] = ('org.nextbsd.driver.VirtIOGraphics', '1af4',
+                                          ['org.nextbsd.kpi.IOGraphics','org.nextbsd.kpi.DMABuf',
+                                           'org.nextbsd.kpi.IOGraphicsExtras',
+                                           'org.nextbsd.kpi.IOGraphicsShmem',
+                                           'org.nextbsd.kpi.LinuxVirtIO'])
           def load(n):
               return plistlib.load(open(f'kexts/{n}.kext/Contents/Info.plist','rb'))
           for name,(bid,vendor,deps) in checks.items():

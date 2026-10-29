@@ -53,7 +53,7 @@ static const struct pci_device_id pciidlist[] = {
 };
 EOF
 if command -v cc >/dev/null 2>&1 || command -v "${CC:-}" >/dev/null 2>&1; then
-	I915=$("$TOOLS/gen-i915-personalities.sh" "$WORK/i915_pciids.h" "$WORK/i915_pci.c" org.nextbsd.kext.intelgraphics IntelGraphics)
+	I915=$("$TOOLS/gen-i915-personalities.sh" "$WORK/i915_pciids.h" "$WORK/i915_pci.c" org.nextbsd.driver.IntelGraphics IntelGraphics)
 	printf '%s\n' "$I915"
 	printf '%s\n' "$I915" | grep -q '0x59168086' || fail "i915: 0x5916 (FOO) missing"
 	printf '%s\n' "$I915" | grep -q '0x591e8086' || fail "i915: 0x591E not lowercased"
@@ -77,7 +77,7 @@ static const struct pci_device_id pciidlist[] = {
 	{0, 0, 0}
 };
 EOF
-AMD=$("$TOOLS/gen-amdgpu-personalities.sh" "$WORK/amdgpu_drv.c" org.nextbsd.kext.amdgraphics AMDGraphics)
+AMD=$("$TOOLS/gen-amdgpu-personalities.sh" "$WORK/amdgpu_drv.c" org.nextbsd.driver.AMDGraphics AMDGraphics)
 printf '%s\n' "$AMD"
 printf '%s\n' "$AMD" | grep -q '0x67df1002' || fail "amdgpu: 0x67DF missing"
 printf '%s\n' "$AMD" | grep -q '0x66491002' || fail "amdgpu: 0x6649 (CIK Bonaire) missing"
@@ -98,7 +98,7 @@ cat > "$WORK/drm_pciids.h" <<'EOF'
 	{0, 0, 0}
 EOF
 RAD=$("$TOOLS/gen-radeon-personalities.sh" -x "$WORK/amdgpu-match.txt" \
-	"$WORK/drm_pciids.h" org.nextbsd.kext.radeongraphics RadeonGraphics)
+	"$WORK/drm_pciids.h" org.nextbsd.driver.RadeonGraphics RadeonGraphics)
 printf '%s\n' "$RAD"
 printf '%s\n' "$RAD" | grep -q '0x31501002' || fail "radeon: 0x3150 (radeon-only) missing"
 if printf '%s\n' "$RAD" | grep -q '0x66491002'; then

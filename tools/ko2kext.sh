@@ -23,7 +23,7 @@ usage: ko2kext.sh [-o outdir] [-v version] [-l dep-bundle-id]... [-f firmware]..
   -o outdir        where to write <Name>.kext       (default: .)
   -v version       CFBundleVersion                   (default: 1.0)
   -l dep-bundle-id add an OSBundleLibraries dependency (repeatable)
-                     e.g. -l org.nextbsd.kpi.LinuxKPIWlan
+                     e.g. -l org.nextbsd.compat.LinuxKpiWlan
   -f firmware      bundle firmware into Contents/Resources/firmware (repeatable).
                      A file is copied in; a directory has its contents copied in
                      flat (symlinks dereferenced) so e.g. all iwlwifi *.ucode
@@ -33,8 +33,8 @@ usage: ko2kext.sh [-o outdir] [-v version] [-l dep-bundle-id]... [-f firmware]..
                      to inject into Info.plist. This is the device-id match table
                      the in-kernel IOService matcher reads to bind the driver.
 
-  e.g. ko2kext.sh -l org.nextbsd.kpi.LinuxKPIWlan \
-                  if_iwlwifi.ko IntelWiFi org.nextbsd.driver.IntelWiFi
+  e.g. ko2kext.sh -l org.nextbsd.compat.LinuxKpiWlan \
+                  if_iwlwifi.ko IntelIwlwifi org.nextbsd.driver.IntelIwlwifi
 U
 	exit 1
 }

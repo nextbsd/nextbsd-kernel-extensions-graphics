@@ -3,7 +3,7 @@
 		<key>V3D</key>
 		<dict>
 			<key>CFBundleIdentifier</key>
-			<string>org.nextbsd.kext.v3d</string>
+			<string>org.nextbsd.driver.V3D</string>
 			<key>IOClass</key>
 			<string>V3D</string>
 			<key>IOProviderClass</key>

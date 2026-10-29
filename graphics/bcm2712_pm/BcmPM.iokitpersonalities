@@ -3,7 +3,7 @@
 		<key>BcmPM</key>
 		<dict>
 			<key>CFBundleIdentifier</key>
-			<string>org.nextbsd.kext.bcmpm</string>
+			<string>org.nextbsd.driver.BcmPM</string>
 			<key>IOClass</key>
 			<string>BcmPM</string>
 			<key>IOProviderClass</key>

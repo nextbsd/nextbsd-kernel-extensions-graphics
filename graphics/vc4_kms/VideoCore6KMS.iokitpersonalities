@@ -3,7 +3,7 @@
 		<key>VideoCore6KMS</key>
 		<dict>
 			<key>CFBundleIdentifier</key>
-			<string>org.nextbsd.kext.videocore6kms</string>
+			<string>org.nextbsd.driver.VideoCore6KMS</string>
 			<key>IOClass</key>
 			<string>VideoCore6KMS</string>
 			<key>IOProviderClass</key>

@@ -3,7 +3,7 @@
 		<key>BcmDVP</key>
 		<dict>
 			<key>CFBundleIdentifier</key>
-			<string>org.nextbsd.kext.bcmdvp</string>
+			<string>org.nextbsd.driver.BcmDVP</string>
 			<key>IOClass</key>
 			<string>BcmDVP</string>
 			<key>IOProviderClass</key>

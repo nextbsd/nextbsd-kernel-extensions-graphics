@@ -20,7 +20,7 @@ on:
       - 'tools/gen-amdgpu-personalities.sh'
       - 'tools/gen-radeon-personalities.sh'
       - 'tools/fetch-kernel-sdk.sh'
-      - 'tools/stamp-kernel-build-id.py'
+      - 'tools/stamp-kernel-abi.py'
       - 'tools/set-osbundlerequired.py'
       - 'data/osbundlerequired.tsv'
       - 'tests/kext-boot-test.sh'
@@ -46,7 +46,7 @@ on:
       - 'tools/gen-amdgpu-personalities.sh'
       - 'tools/gen-radeon-personalities.sh'
       - 'tools/fetch-kernel-sdk.sh'
-      - 'tools/stamp-kernel-build-id.py'
+      - 'tools/stamp-kernel-abi.py'
       - 'tools/set-osbundlerequired.py'
       - 'data/osbundlerequired.tsv'
       - 'tests/kext-boot-test.sh'
@@ -83,8 +83,10 @@ env:
   # removed drm_fb_helper_alloc_info(), which broke our vendored
   # graphics/drivers/gpu/drm/drm_fbdev_shmem.c on the next rebuild with no
   # change on our side. Bump this deliberately: re-check that
-  # graphics/drm-kmod-patches apply in order and that the vendored DRM sources
-  # under graphics/ still match the new tag's API.
+  # graphics/drm-kmod-patches apply in order, that the vendored DRM sources
+  # under graphics/ still match the new tag's API, and that no new
+  # __FreeBSD_version gate picks a FreeBSD 16 API at NextBSD's 2700000 (README,
+  # "drm-kmod and __FreeBSD_version"; nextbsd-kernel#376).
   DRM_KMOD_REF: drm_v6.12.85_3
 
 jobs:
@@ -128,9 +130,11 @@ jobs:
 
       # The kernel SDK from nextbsd-kernel's `continuous` release
       # (nextbsd-kernel#327): the kernel's headers, generated options, exported
-      # symbols and KERNEL-BUILD-ID. No kernel source or obj tree, no relink
-      # (nextbsd-kernel-extensions#2). Leaves the ID in /tmp/kernel-build-id and
-      # KERNEL_SDK in the environment; every module below uses
+      # symbols, KERNEL-BUILD-ID and kernel/kext ABI versions (nextbsd-kernel#376;
+      # the build ID stands in for both on an older SDK). No kernel source or
+      # obj tree, no relink (nextbsd-kernel-extensions#2). Leaves the ID and
+      # versions in /tmp/kernel-build-id, and KERNEL_SDK, KERNEL_BUILD_ID and
+      # KERNEL_ABI_VERSION in the environment; every module below uses
       # SYSDIR=$KERNEL_SDK/sys.
       - name: Kernel SDK
         env:
@@ -151,13 +155,16 @@ jobs:
             TARGET=${{ matrix.target }} TARGET_ARCH=${{ matrix.target_arch }} \
             kernel-toolchain -j"$(nproc)"
 
-      # The KERNEL-BUILD-ID this job built against, for the publish job, which
-      # requires every job on an arch to agree before it stamps and ships.
-      - name: Upload KERNEL-BUILD-ID
+      # The KERNEL-BUILD-ID and KERNEL-ABI-VERSION this job built against, for
+      # the publish job, which requires every job on an arch to agree before it
+      # stamps and ships.
+      - name: Upload KERNEL-BUILD-ID and KERNEL-ABI-VERSION
         uses: actions/upload-artifact@v4
         with:
           name: kernel-build-id-drm-kmod-${{ matrix.target }}
-          path: /tmp/kernel-build-id/KERNEL-BUILD-ID
+          path: |
+            /tmp/kernel-build-id/KERNEL-BUILD-ID
+            /tmp/kernel-build-id/KERNEL-ABI-VERSION
           if-no-files-found: error
 
       - name: Build drm-kmod (${{ env.DRM_KMOD_REF }}) against the kernel SDK
@@ -1415,11 +1422,12 @@ jobs:
           print(f"All GPU kext match sets pairwise disjoint ({len(allmatched)} kexts, {len(pairs)} pairs)")
           PY
 
-      # Every kext records the kernel build it was compiled for, in its own
-      # Info.plist (NBSDKernelBuildID), so the ID travels with the bundle into
-      # /System/Library/Extensions (nextbsd-kernel#326).
-      - name: Stamp KERNEL-BUILD-ID into the graphics kexts
-        run: python3 nbkm-tools/tools/stamp-kernel-build-id.py "$KERNEL_BUILD_ID" kexts
+      # Every kext records the kernel ABI it was compiled for, in its own
+      # Info.plist (NBSDKernelABIVersion, nextbsd-kernel#376), plus the legacy
+      # NBSDKernelBuildID (nextbsd-kernel#326), so both travel with the bundle
+      # into /System/Library/Extensions.
+      - name: Stamp the kernel ABI version into the graphics kexts
+        run: python3 nbkm-tools/tools/stamp-kernel-abi.py "$KERNEL_ABI_VERSION" "$KERNEL_BUILD_ID" kexts
 
       # OSBundleRequired by role, as Mac OS X 10.9 tags its kexts
       # (nextbsd-kernel-extensions#4): display drivers and their libraries are
@@ -1654,17 +1662,21 @@ jobs:
 
       # Every job on an arch must have built against the same kernel build;
       # a mismatch means nextbsd-kernel's `continuous` moved mid-run, and the
-      # kexts in one tarball would disagree. KBID_<arch> is what this publish
-      # stamps into (and checks against) every kext it ships.
-      - name: Resolve KERNEL-BUILD-ID per arch
+      # kexts in one tarball would disagree. KBID_<arch> and KABI_<arch> are
+      # what this publish stamps into (and checks against) every kext it ships.
+      - name: Resolve KERNEL-BUILD-ID and KERNEL-ABI-VERSION per arch
         run: |
           set -eu
           for arch in amd64 arm64; do
             ids=$(cat artifacts/kernel-build-id-*-"$arch"/KERNEL-BUILD-ID 2>/dev/null | sort -u)
             n=$(printf '%s' "$ids" | grep -c . || true)
             [ "$n" -eq 1 ] || { echo "FAIL: $arch jobs built against $n kernel builds: $ids" >&2; exit 1; }
-            echo "  $arch: $ids"
+            abis=$(cat artifacts/kernel-build-id-*-"$arch"/KERNEL-ABI-VERSION 2>/dev/null | sort -u)
+            n=$(printf '%s' "$abis" | grep -c . || true)
+            [ "$n" -eq 1 ] || { echo "FAIL: $arch jobs built against $n kernel ABI versions: $abis" >&2; exit 1; }
+            echo "  $arch: ABI $abis, build $ids"
             echo "KBID_$arch=$ids" >> "$GITHUB_ENV"
+            echo "KABI_$arch=$abis" >> "$GITHUB_ENV"
           done
 
       - name: Package per-arch assets
@@ -1778,9 +1790,10 @@ jobs:
             inject "$GDIR" AMDGraphics    amdgpu LICENSE.amdgpu
             inject "$GDIR" RadeonGraphics radeon LICENSE.radeon
             # Stamped by the drm-kmod job; this confirms they carry this arch's
-            # ID (and fails if not) before they ship.
+            # ABI version and ID (and fails if not) before they ship.
             eval "kbid=\$KBID_$arch"
-            python3 tools/stamp-kernel-build-id.py "$kbid" "$GDIR"
+            eval "kabi=\$KABI_$arch"
+            python3 tools/stamp-kernel-abi.py "$kabi" "$kbid" "$GDIR"
             # One asset per arch for the whole graphics stack (drm core kexts carry
             # no firmware but must ship so the dependency chain resolves at load).
             tar -C "$GDIR" -czf "out/graphics-kexts-$arch.tar.gz" .
@@ -1802,8 +1815,10 @@ jobs:
             device-id match table + bundled vendor firmware) — all installed into
             /System/Library/Extensions.
 
-            Every kext carries `NBSDKernelBuildID` in its Info.plist: the
-            nextbsd-kernel KERNEL-BUILD-ID it was built for (amd64
+            Every kext carries `NBSDKernelABIVersion` in its Info.plist: the
+            nextbsd-kernel KERNEL-ABI-VERSION it was built for (amd64
+            `${{ env.KABI_amd64 }}`, arm64 `${{ env.KABI_arm64 }}`), and the
+            legacy `NBSDKernelBuildID`, that kernel's KERNEL-BUILD-ID (amd64
             `${{ env.KBID_amd64 }}`, arm64 `${{ env.KBID_arm64 }}`).
 
             Build log: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}

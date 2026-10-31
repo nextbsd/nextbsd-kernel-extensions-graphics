@@ -1,0 +1,45 @@
+intel_freebsd: keep the releng/15.1 BUS_ALLOC_RESOURCE call on NextBSD
+
+Origin: NextBSD (nextbsd-kernel#376). Not for upstream: it only matters
+because NextBSD's __FreeBSD_version moves off the FreeBSD numbering.
+
+NextBSD's kernel stays on the releng/15.1 kernel API, but its
+__FreeBSD_version / kern.osreldate goes to 2700000 (NextBSD 27). drm-kmod
+picks the bus_alloc_resource(9) form by version:
+
+	#if __FreeBSD_version < 1600005		/* 15.1: int *rid */
+	#else					/* FreeBSD 16: int rid */
+
+At 2700000 the FreeBSD 16 branch would be compiled, passing *rid by value
+to a 15.1 BUS_ALLOC_RESOURCE that takes int *rid, and i915.ko would not
+build (or, with the int-conversion error demoted, would hand the bus an
+integer as a pointer at attach).
+
+Replace the threshold with the 15.1 call alone, so it is selected at both
+1501000 (today) and 2700000. Every other __FreeBSD_version gate in
+drm_v6.12.85_3 already selects the same branch at 1501000 and 2700000 (the
+15.1 MFC ranges are paired with ">= 16000xx", or the gate is below 15.1);
+see "drm-kmod and __FreeBSD_version" in the README.
+
+--- a/drivers/gpu/drm/i915/intel_freebsd.c
++++ b/drivers/gpu/drm/i915/intel_freebsd.c
+@@ -57,13 +57,14 @@ bsd_intel_pci_bus_alloc_mem(device_t dev, int *rid, uintmax_t size,
+ 	device_t vga;
+ 
+ 	vga = device_get_parent(dev);
+-#if __FreeBSD_version < 1600005
++	/*
++	 * NextBSD: the releng/15.1 bus_alloc_resource(9) KPI (rid by pointer)
++	 * whatever __FreeBSD_version says. NextBSD reports 2700000 but keeps
++	 * the 15.1 kernel API, so the FreeBSD 16 (>= 1600005) rid-by-value
++	 * form must never be selected (nextbsd-kernel#376).
++	 */
+ 	res = BUS_ALLOC_RESOURCE(device_get_parent(vga), dev, SYS_RES_MEMORY,
+ 	    rid, 0, ~0UL, size, RF_ACTIVE | RF_SHAREABLE);
+-#else
+-	res = BUS_ALLOC_RESOURCE(device_get_parent(vga), dev, SYS_RES_MEMORY,
+-	    *rid, 0, ~0UL, size, RF_ACTIVE | RF_SHAREABLE);
+-#endif
+ 	if (res != NULL) {
+ 		*start = rman_get_start(res);
+ 		*end = rman_get_end(res);

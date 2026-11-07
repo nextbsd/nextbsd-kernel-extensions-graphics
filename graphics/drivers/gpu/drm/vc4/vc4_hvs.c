@@ -447,6 +447,9 @@ static int vc4_hvs_upload_linear_kernel(struct vc4_hvs *hvs,
 	/*
 	 * NOTE: We don't need a call to drm_dev_enter()/drm_dev_exit()
 	 * here since that function is only called from vc4_hvs_bind().
+	 *
+	 * NextBSD (#114): it is now called from vc4_hvs_display_start(), on
+	 * the first open of the device, before any client can commit.
 	 */
 
 	ret = drm_mm_insert_node(&hvs->dlist_mm, space, VC4_KERNEL_DWORDS);
@@ -2184,30 +2187,12 @@ static int vc4_hvs_bind(struct device *dev, struct device *master, void *data)
 	else
 		hvs->dlist = hvs->regs + SCALER_DLIST_START;
 
-	if (vc4->gen >= VC4_GEN_6_C)
-		ret = vc6_hvs_hw_init(hvs);
-	else
-		ret = vc4_hvs_hw_init(hvs);
-	if (ret)
-		return ret;
-
-	/* Upload filter kernels.  We only have the two for now, so we
-	 * keep them around for the lifetime of the driver.
+	/*
+	 * DEVIATION (nextbsd-kernel-extensions-graphics#114): the HVS register
+	 * init, the filter kernel upload and the COB setup moved to
+	 * vc4_hvs_display_start(), run on the first open of the DRM device.
+	 * They reprogram the scaler the firmware is still scanning out of.
 	 */
-	ret = vc4_hvs_upload_linear_kernel(hvs,
-					   &hvs->mitchell_netravali_filter,
-					   mitchell_netravali_1_3_1_3_kernel);
-	if (ret)
-		return ret;
-	ret = vc4_hvs_upload_linear_kernel(hvs,
-					   &hvs->nearest_neighbour_filter,
-					   nearest_neighbour_kernel);
-	if (ret)
-		return ret;
-
-	ret = vc4_hvs_cob_init(hvs);
-	if (ret)
-		return ret;
 
 	if (vc4->gen < VC4_GEN_6_C) {
 		ret = devm_request_irq(dev, platform_get_irq(pdev, 0),
@@ -2244,6 +2229,43 @@ static int vc4_hvs_bind(struct device *dev, struct device *master, void *data)
 	}
 
 	return 0;
+}
+
+/*
+ * DEVIATION (nextbsd-kernel-extensions-graphics#114): the hardware half of
+ * vc4_hvs_bind(), deferred to the first open of the DRM device. Same calls in
+ * the same order as bind used to make them.
+ */
+int vc4_hvs_display_start(struct vc4_hvs *hvs)
+{
+	int ret;
+
+	if (hvs->vc4->gen >= VC4_GEN_6_C)
+		ret = vc6_hvs_hw_init(hvs);
+	else
+		ret = vc4_hvs_hw_init(hvs);
+	if (ret)
+		return ret;
+
+	/* Upload filter kernels.  We only have the two for now, so we
+	 * keep them around for the lifetime of the driver.
+	 */
+	if (!drm_mm_node_allocated(&hvs->mitchell_netravali_filter)) {
+		ret = vc4_hvs_upload_linear_kernel(hvs,
+						   &hvs->mitchell_netravali_filter,
+						   mitchell_netravali_1_3_1_3_kernel);
+		if (ret)
+			return ret;
+	}
+	if (!drm_mm_node_allocated(&hvs->nearest_neighbour_filter)) {
+		ret = vc4_hvs_upload_linear_kernel(hvs,
+						   &hvs->nearest_neighbour_filter,
+						   nearest_neighbour_kernel);
+		if (ret)
+			return ret;
+	}
+
+	return vc4_hvs_cob_init(hvs);
 }
 
 static void vc4_hvs_unbind(struct device *dev, struct device *master,

@@ -3784,22 +3784,16 @@ static int vc4_hdmi_bind(struct device *dev, struct device *master, void *data)
 	 * inside a display bring-up.
 	 */
 
-	ret = vc4_hdmi_runtime_resume(dev);
-	if (ret) {
-		drm_err(drm, "Failed to resume HDMI: %d\n", ret);
-		return ret;
-	}
-
-
-	if ((of_device_is_compatible(dev_of_node(dev), "brcm,bcm2711-hdmi0") ||
-	     of_device_is_compatible(dev_of_node(dev), "brcm,bcm2711-hdmi1") ||
-	     of_device_is_compatible(dev_of_node(dev), "brcm,bcm2712-hdmi0") ||
-	     of_device_is_compatible(dev_of_node(dev), "brcm,bcm2712-hdmi1")) &&
-	    HDMI_READ(HDMI_VID_CTL) & VC4_HD_VID_CTL_ENABLE) {
-		clk_prepare_enable(vc4_hdmi->pixel_clock);
-		clk_prepare_enable(vc4_hdmi->hsm_clock);
-		clk_prepare_enable(vc4_hdmi->pixel_bvb_clock);
-	}
+	/*
+	 * DEVIATION (nextbsd-kernel-extensions-graphics#114): the resume above
+	 * and the clock adoption that followed it are no longer run here. The
+	 * resume resets the HDMI block (variant->reset), which turns the
+	 * firmware's HDMI output off and makes the monitor resync, so it now
+	 * runs from vc4_hdmi_display_start() on the first open of the DRM
+	 * device, in the same order relative to the HVS init and
+	 * vc4_crtc_disable_at_boot() as before. See vc4_display_start() in
+	 * vc4_drv.c.
+	 */
 
 	ret = drmm_encoder_init(drm, encoder,
 				&vc4_hdmi_encoder_funcs,
@@ -3834,6 +3828,39 @@ err_put_runtime_pm:
 	pm_runtime_put_sync(dev);
 
 	return ret;
+}
+
+/*
+ * DEVIATION (nextbsd-kernel-extensions-graphics#114): the display-touching
+ * half of vc4_hdmi_bind(), deferred to the first open of the DRM device.
+ * Exactly what bind used to run at this point: the hand-called runtime resume
+ * (firmware display power, audio clock, block reset), then the adoption of a
+ * pixelvalve the firmware left running.
+ */
+int vc4_hdmi_display_start(struct drm_encoder *encoder)
+{
+	struct vc4_hdmi *vc4_hdmi = encoder_to_vc4_hdmi(encoder);
+	struct device *dev = &vc4_hdmi->pdev->dev;
+	struct drm_device *drm = vc4_hdmi->connector.dev;
+	int ret;
+
+	ret = vc4_hdmi_runtime_resume(dev);
+	if (ret) {
+		drm_err(drm, "Failed to resume HDMI: %d\n", ret);
+		return ret;
+	}
+
+	if ((of_device_is_compatible(dev_of_node(dev), "brcm,bcm2711-hdmi0") ||
+	     of_device_is_compatible(dev_of_node(dev), "brcm,bcm2711-hdmi1") ||
+	     of_device_is_compatible(dev_of_node(dev), "brcm,bcm2712-hdmi0") ||
+	     of_device_is_compatible(dev_of_node(dev), "brcm,bcm2712-hdmi1")) &&
+	    HDMI_READ(HDMI_VID_CTL) & VC4_HD_VID_CTL_ENABLE) {
+		clk_prepare_enable(vc4_hdmi->pixel_clock);
+		clk_prepare_enable(vc4_hdmi->hsm_clock);
+		clk_prepare_enable(vc4_hdmi->pixel_bvb_clock);
+	}
+
+	return 0;
 }
 
 static void vc4_hdmi_unbind(struct device *dev, struct device *master, void *data)

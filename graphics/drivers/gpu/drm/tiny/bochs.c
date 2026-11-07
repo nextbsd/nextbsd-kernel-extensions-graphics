@@ -382,6 +382,7 @@ static void bochs_hw_blank(struct bochs_device *bochs, bool blank)
 static void bochs_hw_setmode(struct bochs_device *bochs, struct drm_display_mode *mode)
 {
 	int idx;
+	bool same_mode;
 
 	if (!drm_dev_enter(bochs->dev, &idx))
 		return;
@@ -398,7 +399,25 @@ static void bochs_hw_setmode(struct bochs_device *bochs, struct drm_display_mode
 
 	bochs_hw_blank(bochs, false);
 
-	bochs_dispi_write(bochs, VBE_DISPI_INDEX_ENABLE,      0);
+	/*
+	 * DEVIATION (nextbsd-kernel-extensions-graphics#113): no flash at
+	 * attach. Upstream always writes ENABLE=0 and then re-enables without
+	 * VBE_DISPI_NOCLEARMEM, so QEMU wipes VRAM and the boot splash the
+	 * loader drew turns black for a frame. Read the DISPI mode back first:
+	 * when the device is already scanning out at this xres/yres/bpp (the
+	 * loader's VBE mode), skip the disable, and always re-enable with
+	 * NOCLEARMEM so VRAM survives a real mode change too. The fbdev
+	 * console redraws whatever it needs after the modeset.
+	 */
+	same_mode =
+	    (bochs_dispi_read(bochs, VBE_DISPI_INDEX_ENABLE) &
+	     VBE_DISPI_ENABLED) != 0 &&
+	    bochs_dispi_read(bochs, VBE_DISPI_INDEX_XRES) == bochs->xres &&
+	    bochs_dispi_read(bochs, VBE_DISPI_INDEX_YRES) == bochs->yres &&
+	    bochs_dispi_read(bochs, VBE_DISPI_INDEX_BPP) == bochs->bpp;
+
+	if (!same_mode)
+		bochs_dispi_write(bochs, VBE_DISPI_INDEX_ENABLE, 0);
 	bochs_dispi_write(bochs, VBE_DISPI_INDEX_BPP,         bochs->bpp);
 	bochs_dispi_write(bochs, VBE_DISPI_INDEX_XRES,        bochs->xres);
 	bochs_dispi_write(bochs, VBE_DISPI_INDEX_YRES,        bochs->yres);
@@ -410,7 +429,8 @@ static void bochs_hw_setmode(struct bochs_device *bochs, struct drm_display_mode
 	bochs_dispi_write(bochs, VBE_DISPI_INDEX_Y_OFFSET,    0);
 
 	bochs_dispi_write(bochs, VBE_DISPI_INDEX_ENABLE,
-			  VBE_DISPI_ENABLED | VBE_DISPI_LFB_ENABLED);
+			  VBE_DISPI_ENABLED | VBE_DISPI_LFB_ENABLED |
+			  VBE_DISPI_NOCLEARMEM);
 
 	drm_dev_exit(idx);
 }

@@ -1,0 +1,214 @@
+linux_fb, i915: freeze the boot framebuffer as a Disable/Enable pair
+
+vt_freeze_main_vd(), reached from register_fictitious_range(), sets
+FB_FLAG_NOWRITE on the boot framebuffer (efifb) when a DRM driver's
+aperture overlaps it. With the boot splash up that freezes the spinner from
+i915's fbdev create, or from early in amdgpu init, until the console moves.
+
+Make the freeze Darwin's console-op pair:
+
+- vt_freeze_main_vd() sends kPEDisableScreen (with the frozen fb_info)
+  before setting FB_FLAG_NOWRITE, so the spinner stops touching the old
+  mapping. __register_framebuffer() already sends the matching
+  kPEEnableScreen once the console has moved to the fbdev buffer (0009);
+  the pair is sent at most once, so that Disable is not repeated. If the
+  driver goes away first, vt_unfreeze_main_vd() closes the pair.
+- i915 reusing the BIOS framebuffer calls the new
+  register_fictitious_range_inherited(). The BIOS framebuffer stays pinned
+  at its GGTT offset (PIN_OFFSET_FIXED), so when the fbdev base equals the
+  base vt(4) draws on and the console is in graphics mode, there is no
+  freeze at all and the spinner keeps turning through i915 attach.
+- amdgpu and radeon keep the freeze (BAR resize can move efifb): the
+  spinner pauses during init and resumes, with the splash still on screen,
+  after the switch.
+
+Text mode (-v, -s, serial, older kernels) sends no op and keeps today's
+freeze, i915 included. kPEDisableScreen is invoked by name with its value
+(7) repeated from nextbsd-kernel's <sys/pexpert.h>, as in 0009.
+
+Refs nextbsd/nextbsd-kernel-extensions-graphics#112.
+
+diff --git a/drivers/gpu/drm/drm_os_freebsd.c b/drivers/gpu/drm/drm_os_freebsd.c
+index b7f6bba..7e4e91c 100644
+--- a/drivers/gpu/drm/drm_os_freebsd.c
++++ b/drivers/gpu/drm/drm_os_freebsd.c
+@@ -78,8 +78,9 @@ sysctl_pci_id(SYSCTL_HANDLER_ARGS)
+ 	return (sysctl_handle_string(oidp, buf, sizeof(buf), req));
+ }
+ 
+-int
+-register_fictitious_range(struct drm_device *ddev, vm_paddr_t base, size_t size)
++static int
++__register_fictitious_range(struct drm_device *ddev, vm_paddr_t base,
++    size_t size, bool freeze)
+ {
+ 	int ret;
+ 	struct apertures_struct *ap;
+@@ -87,11 +88,13 @@ register_fictitious_range(struct drm_device *ddev, vm_paddr_t base, size_t size)
+ 	MPASS(base != 0);
+ 	MPASS(size != 0);
+ 
+-	ap = alloc_apertures(1);
+-	ap->ranges[0].base = base;
+-	ap->ranges[0].size = size;
+-	vt_freeze_main_vd(ap);
+-	kfree(ap);
++	if (freeze) {
++		ap = alloc_apertures(1);
++		ap->ranges[0].base = base;
++		ap->ranges[0].size = size;
++		vt_freeze_main_vd(ap);
++		kfree(ap);
++	}
+ 
+ 	ret = vm_phys_fictitious_reg_range(base, base + size,
+ #ifdef VM_MEMATTR_WRITE_COMBINING
+@@ -107,6 +110,27 @@ register_fictitious_range(struct drm_device *ddev, vm_paddr_t base, size_t size)
+ 	return (ret);
+ }
+ 
++int
++register_fictitious_range(struct drm_device *ddev, vm_paddr_t base, size_t size)
++{
++	return (__register_fictitious_range(ddev, base, size, true));
++}
++
++/*
++ * NextBSD (E19): for a driver whose fbdev buffer is the firmware framebuffer
++ * it inherited (i915 reusing the BIOS framebuffer). When that buffer is the
++ * one vt(4) is drawing on, in graphics mode, the console is left running:
++ * no freeze, so the boot spinner keeps turning through the driver's init.
++ * Otherwise this is register_fictitious_range().
++ */
++int
++register_fictitious_range_inherited(struct drm_device *ddev, vm_paddr_t base,
++    size_t size)
++{
++	return (__register_fictitious_range(ddev, base, size,
++	    !vt_main_vd_keeps_scanout(base)));
++}
++
+ void
+ unregister_fictitious_range(struct drm_device *ddev, vm_paddr_t base, size_t size)
+ {
+diff --git a/drivers/gpu/drm/drm_os_freebsd.h b/drivers/gpu/drm/drm_os_freebsd.h
+index 3ff742c..f2b97a2 100644
+--- a/drivers/gpu/drm/drm_os_freebsd.h
++++ b/drivers/gpu/drm/drm_os_freebsd.h
+@@ -37,9 +37,11 @@ void cancel_reset_debug_log(void);
+ 
+ void vt_freeze_main_vd(struct apertures_struct *a);
+ void vt_unfreeze_main_vd(void);
++bool vt_main_vd_keeps_scanout(vm_paddr_t base);
+ 
+ struct drm_device;
+ int register_fictitious_range(struct drm_device *ddev, vm_paddr_t start, vm_paddr_t end);
++int register_fictitious_range_inherited(struct drm_device *ddev, vm_paddr_t start, vm_paddr_t end);
+ void unregister_fictitious_range(struct drm_device *ddev, vm_paddr_t start, vm_paddr_t end);
+ 
+ #if 0
+diff --git a/drivers/gpu/drm/i915/display/intel_fbdev.c b/drivers/gpu/drm/i915/display/intel_fbdev.c
+index 90d3444..e21e164 100644
+--- a/drivers/gpu/drm/i915/display/intel_fbdev.c
++++ b/drivers/gpu/drm/i915/display/intel_fbdev.c
+@@ -274,7 +274,17 @@ static int intelfb_create(struct drm_fb_helper *helper,
+ 	 * values passed to register_fictitious_range() below are unavailable
+ 	 * from a generic structure set by both drivers.
+ 	 */
+-	register_fictitious_range(dev, info->fix.smem_start, info->fix.smem_len);
++	/*
++	 * NextBSD (E19): a reused BIOS framebuffer stays pinned at its GGTT
++	 * offset, so the firmware console's mapping still points at the
++	 * scanout and needs no freeze while the boot splash is up.
++	 */
++	if (prealloc)
++		register_fictitious_range_inherited(dev, info->fix.smem_start,
++		    info->fix.smem_len);
++	else
++		register_fictitious_range(dev, info->fix.smem_start,
++		    info->fix.smem_len);
+ #endif
+ 
+ 	drm_fb_helper_fill_info(info, &ifbdev->helper, sizes);
+diff --git a/drivers/gpu/drm/linux_fb.c b/drivers/gpu/drm/linux_fb.c
+index 9d39066..22a5135 100644
+--- a/drivers/gpu/drm/linux_fb.c
++++ b/drivers/gpu/drm/linux_fb.c
+@@ -189,6 +189,16 @@ pe_prefill_fbdev(struct drm_fb_helper *fb_helper,
+ 	(void)fb_helper->funcs->fb_dirty(fb_helper, &clip);
+ }
+ 
++/*
++ * NextBSD (E19): the freeze is Darwin's kPEDisableScreen. A driver that is
++ * about to disturb the framebuffer vt(4) draws on (a BAR resize, a modeset
++ * that moves or turns off the scanout) first tells the platform expert, so
++ * the boot spinner stops touching the old mapping, then vt(4) stops writing
++ * it (FB_FLAG_NOWRITE, as before). The matching kPEEnableScreen is sent by
++ * __register_framebuffer() once the console has moved to the driver's
++ * fbdev buffer, or by vt_unfreeze_main_vd() if the driver goes away first.
++ * In text mode no op is sent and the freeze is exactly as before.
++ */
+ void
+ vt_freeze_main_vd(struct apertures_struct *a)
+ {
+@@ -196,14 +206,8 @@ vt_freeze_main_vd(struct apertures_struct *a)
+ 	int i;
+ 	bool overlap = false;
+ 
+-	if (main_vd && main_vd->vd_driver && main_vd->vd_softc &&
+-	    /* For these, we know the softc (or its first field) is of type fb_info */
+-	    (strcmp(main_vd->vd_driver->vd_name, "efifb") == 0
+-	    || strcmp(main_vd->vd_driver->vd_name, "vbefb") == 0
+-	    || strcmp(main_vd->vd_driver->vd_name, "ofwfb") == 0
+-	    || strcmp(main_vd->vd_driver->vd_name, "fb") == 0
+-	    || strcmp(main_vd->vd_driver->vd_name, "drmfb") == 0)) {
+-		fb = main_vd->vd_softc;
++	/* For these, we know the softc (or its first field) is of type fb_info */
++	if ((fb = vt_main_vd_fb()) != NULL) {
+ 
+ 		for (i = 0; i < a->count; i++) {
+ 			if (fb->fb_pbase == a->ranges[i].base) {
+@@ -216,11 +220,33 @@ vt_freeze_main_vd(struct apertures_struct *a)
+ 				break;
+ 			}
+ 		}
+-		if (overlap == true)
++		if (overlap == true) {
++			if (pe_console_graphics())
++				pe_screen_disable(fb);
+ 			fb->fb_flags |= FB_FLAG_NOWRITE;
++		}
+ 	}
+ }
+ 
++/*
++ * NextBSD (E19): i915 reusing the firmware framebuffer. True when `base' is
++ * the physical base of the framebuffer vt(4) draws on, i.e. the driver
++ * keeps scanning out the very pixels on screen at the same address (i915
++ * pins the BIOS framebuffer at its GGTT offset, PIN_OFFSET_FIXED), and the
++ * console is in graphics mode. The boot spinner can then keep drawing
++ * through the driver's init; no freeze is needed. Text mode keeps the
++ * freeze, so -v boots are unchanged.
++ */
++bool
++vt_main_vd_keeps_scanout(vm_paddr_t base)
++{
++	struct fb_info *fb;
++
++	fb = vt_main_vd_fb();
++	return (fb != NULL && fb->fb_pbase != 0 && fb->fb_pbase == base &&
++	    pe_console_graphics());
++}
++
+ void
+ vt_unfreeze_main_vd(void)
+ {
+@@ -228,6 +254,8 @@ vt_unfreeze_main_vd(void)
+ 
+ 	fb = main_vd->vd_softc;
+ 	fb->fb_flags &= ~FB_FLAG_NOWRITE;
++	/* Close a kPEDisableScreen the fbdev switch never closed. */
++	pe_screen_enable(NULL);
+ }
+ 
+ /* Call restore out of vt(9) locks. */

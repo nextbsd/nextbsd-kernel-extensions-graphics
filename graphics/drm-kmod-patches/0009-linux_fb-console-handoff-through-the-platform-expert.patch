@@ -1,0 +1,294 @@
+linux_fb, vt_drmfb, drm_auth: hand the console over through the platform expert
+
+E19 makes a normal boot graphical from the loader to the login screen. At
+fbdev registration the vt(4) backend switch runs vt_drmfb_init(), which
+clears the screen unconditionally: that is the black frame between the
+firmware's picture and the boot splash. Darwin never clears there: when
+IOFramebuffer takes the console it reports the move to the platform expert
+(PE_initialize_console(): kPEDisableScreen, kPEBaseAddressChange,
+kPEEnableScreen) and the boot graphics stay on screen.
+
+NextBSD's platform expert lives in nextbsd-kernel (sys/sys/pexpert.h,
+sys/dev/iokit/iokit_platform.c, nextbsd/nextbsd-kernel#412). This patch is
+the drm.ko side:
+
+- __register_framebuffer() asks the kernel whether the console is in
+  graphics mode (hw.iokit.console.state is "graphics" or "paused", the
+  sysctl behind PE_graphics_console_active()). If so it sends
+  kPEDisableScreen, switches the vt backend with vt_drmfb_inherit set so
+  vt_drmfb_init() skips its clear, then sends kPEBaseAddressChange and
+  kPEEnableScreen with the new framebuffer. If vt keeps the old backend the
+  pair is closed with kPEEnableScreen and no move.
+- drm_set_master() and drm_drop_master() report a display server taking
+  or giving up the screen through pe_drm_master (1 acquired, 0 dropped).
+  The kernel turns the first acquire into kPEReleaseScreen.
+- fb_info_print() prints only under bootverbose.
+
+Both eventhandlers are invoked BY NAME, the contract of patch 0007 and
+sys/dev/iokit/iokit_drm.c: EVENTHANDLER_INVOKE finds the list at run time,
+so drm.ko links nothing from the kernel side and loads on any kernel. The
+typedefs, EVENTHANDLER_DECLARE lines and op values repeat <sys/pexpert.h>
+exactly; no kernel header is needed to build. On a kernel without the
+platform expert the sysctl does not exist, so the console counts as text.
+
+Text mode (-v, -s, a serial console, no framebuffer, older kernels) keeps
+today's behaviour byte for byte: the clear runs, no op is sent, and
+fb_info_print() still prints under -v.
+
+Refs nextbsd/nextbsd-kernel-extensions-graphics#110.
+
+diff --git a/drivers/gpu/drm/drm_auth.c b/drivers/gpu/drm/drm_auth.c
+index 99fbe6f..e611cc9 100644
+--- a/drivers/gpu/drm/drm_auth.c
++++ b/drivers/gpu/drm/drm_auth.c
+@@ -38,6 +38,33 @@
+ 
+ #include "drm_internal.h"
+ 
++#ifdef __FreeBSD__
++#include <sys/bus.h>
++#include <sys/eventhandler.h>
++
++/*
++ * NextBSD (E19): a display server taking or giving up the screen, Darwin's
++ * WindowServer opening IOFramebuffer. The kernel's platform expert turns the
++ * first acquire into kPEReleaseScreen: the boot spinner stops and the pixels
++ * stay. Invoked BY NAME, the same contract as patch 0007, so drm.ko links
++ * nothing from the kernel side and the invoke is a no-op on a kernel without
++ * it. The typedef and EVENTHANDLER_DECLARE line repeat nextbsd-kernel's
++ * <sys/pexpert.h> exactly; keep both sides identical.
++ *
++ *   dev       the newbus device the driver attached to (dev->dev->bsddev)
++ *   acquired  1 when a master is set, 0 when it is dropped
++ */
++typedef void (*pe_drm_master_fn)(void *, device_t, int);
++EVENTHANDLER_DECLARE(pe_drm_master, pe_drm_master_fn);
++
++static void
++drm_pe_master_notify(struct drm_device *dev, int acquired)
++{
++	EVENTHANDLER_INVOKE(pe_drm_master,
++	    dev->dev != NULL ? dev->dev->bsddev : NULL, acquired);
++}
++#endif
++
+ /**
+  * DOC: master and authentication
+  *
+@@ -166,6 +193,9 @@ static void drm_set_master(struct drm_device *dev, struct drm_file *fpriv,
+ 		dev->driver->master_set(dev, fpriv, new_master);
+ 
+ 	fpriv->was_master = true;
++#ifdef __FreeBSD__
++	drm_pe_master_notify(dev, 1);
++#endif
+ }
+ 
+ static int drm_new_set_master(struct drm_device *dev, struct drm_file *fpriv)
+@@ -305,6 +335,9 @@ static void drm_drop_master(struct drm_device *dev,
+ 	if (dev->driver->master_drop)
+ 		dev->driver->master_drop(dev, fpriv);
+ 	drm_master_put(&dev->master);
++#ifdef __FreeBSD__
++	drm_pe_master_notify(dev, 0);
++#endif
+ }
+ 
+ int drm_dropmaster_ioctl(struct drm_device *dev, void *data,
+diff --git a/drivers/gpu/drm/linux_fb.c b/drivers/gpu/drm/linux_fb.c
+index 10d3455..939a806 100644
+--- a/drivers/gpu/drm/linux_fb.c
++++ b/drivers/gpu/drm/linux_fb.c
+@@ -37,6 +37,8 @@ __FBSDID("$FreeBSD$");
+ #include <sys/systm.h>
+ #include <sys/sx.h>
+ #include <sys/fbio.h>
++#include <sys/eventhandler.h>
++#include <sys/sysctl.h>
+ 
+ #include <dev/vt/vt.h>
+ #include "vt_drmfb.h"
+@@ -56,6 +58,77 @@ extern struct vt_device *main_vd;
+ 
+ static int __unregister_framebuffer(struct linux_fb_info *fb_info);
+ 
++/*
++ * NextBSD (E19): the platform expert's console ops, Darwin's
++ * IOFramebuffer setConsoleInfo() -> PE_initialize_console().
++ *
++ * The kernel side lives in nextbsd-kernel (sys/sys/pexpert.h,
++ * sys/dev/iokit/iokit_platform.c). drm.ko links nothing from it: the
++ * eventhandler is invoked BY NAME, the same contract as patch 0007 and
++ * sys/dev/iokit/iokit_drm.c. EVENTHANDLER_INVOKE looks the list up at run
++ * time, so drm.ko still loads, and every op is a no-op, on a kernel without
++ * the platform expert. The typedef, the EVENTHANDLER_DECLARE line and the op
++ * values (xnu's) repeat <sys/pexpert.h> exactly; keep both sides identical.
++ *
++ *   fb  the FreeBSD struct fb_info the op is about (&linux_fb_info->fbio,
++ *       the one vt(4) gets), or NULL where the kernel allows it.
++ */
++typedef void (*pe_console_op_fn)(void *, struct fb_info *, int);
++EVENTHANDLER_DECLARE(pe_console_op, pe_console_op_fn);
++
++#define	kPEEnableScreen		6
++#define	kPEDisableScreen	7
++#define	kPEBaseAddressChange	8
++
++static volatile u_int pe_screen_disabled;
++
++static void
++pe_console_op_invoke(struct fb_info *fb, int op)
++{
++	EVENTHANDLER_INVOKE(pe_console_op, fb, op);
++}
++
++/*
++ * True while the platform expert owns the console in graphics mode
++ * (PE_graphics_console_active() on the kernel side, read through its
++ * hw.iokit.console.state sysctl so nothing links). Any error, i.e. a kernel
++ * without the platform expert, means text. Sleeping context.
++ */
++static bool
++pe_console_graphics(void)
++{
++	char state[16];
++	size_t len;
++	int error;
++
++	len = sizeof(state);
++	error = kernel_sysctlbyname(curthread,
++	    __DECONST(char *, "hw.iokit.console.state"), state, &len, NULL, 0,
++	    NULL, 0);
++	if (error != 0 || len == 0)
++		return (false);
++	state[sizeof(state) - 1] = '\0';
++	return (strcmp(state, "graphics") == 0 || strcmp(state, "paused") == 0);
++}
++
++/*
++ * kPEDisableScreen and kPEEnableScreen are a pair and do not nest on the
++ * kernel side (xnu's gc_pause()), so send each at most once per pair.
++ */
++static void
++pe_screen_disable(struct fb_info *fb)
++{
++	if (atomic_cmpset_int(&pe_screen_disabled, 0, 1))
++		pe_console_op_invoke(fb, kPEDisableScreen);
++}
++
++static void
++pe_screen_enable(struct fb_info *fb)
++{
++	if (atomic_cmpset_int(&pe_screen_disabled, 1, 0))
++		pe_console_op_invoke(fb, kPEEnableScreen);
++}
++
+ void
+ vt_freeze_main_vd(struct apertures_struct *a)
+ {
+@@ -111,6 +184,9 @@ vt_restore_fbdev_mode(void *arg, int pending)
+ static void
+ fb_info_print(struct linux_fb_info *info)
+ {
++	/* NextBSD (E19): attach details are for verbose boots only. */
++	if (!bootverbose)
++		return;
+ 	printf("start FB_INFO:\n");
+ 	printf("height=%d width=%d depth=%d\n",
+ 	       info->var.yres, info->var.xres, info->var.bits_per_pixel);
+@@ -195,6 +271,7 @@ static int
+ __register_framebuffer(struct linux_fb_info *fb_info)
+ {
+ 	int err;
++	bool graphics;
+ 	struct drm_fb_helper *fb_helper;
+ 
+ 	fb_helper = (struct drm_fb_helper *)fb_info->fbio.fb_priv;
+@@ -223,7 +300,23 @@ __register_framebuffer(struct linux_fb_info *fb_info)
+ 		    "fb_bpp not set, setting to 8\n");
+ 		fb_info->fbio.fb_bpp = 32;
+ 	}
+-	if ((err = vt_drmfb_attach(&fb_info->fbio)) != 0) {
++
++	/*
++	 * NextBSD (E19): with the boot splash on screen, the vt(4) backend
++	 * switch is a console move, as when Darwin's IOFramebuffer takes the
++	 * console from the booter's framebuffer: pause the spinner, switch
++	 * without clearing (vt_drmfb_inherit), point the console at the new
++	 * framebuffer, resume. In text mode none of this runs.
++	 */
++	graphics = pe_console_graphics();
++	if (graphics)
++		pe_screen_disable(NULL);
++	vt_drmfb_inherit = graphics;
++	err = vt_drmfb_attach(&fb_info->fbio);
++	vt_drmfb_inherit = false;
++	if (err != 0) {
++		/* The old console keeps the screen. */
++		pe_screen_enable(NULL);
+ 		switch (err) {
+ 		case EEXIST:
+ 			device_printf(fb_info->fbio.fb_fbd_dev,
+@@ -239,6 +332,9 @@ __register_framebuffer(struct linux_fb_info *fb_info)
+ 		}
+ 		return (-err);
+ 	}
++	if (graphics)
++		pe_console_op_invoke(&fb_info->fbio, kPEBaseAddressChange);
++	pe_screen_enable(&fb_info->fbio);
+ 	fb_info_print(fb_info);
+ 	return 0;
+ }
+diff --git a/drivers/gpu/drm/vt_drmfb.c b/drivers/gpu/drm/vt_drmfb.c
+index b4b1430..bb0ba45 100644
+--- a/drivers/gpu/drm/vt_drmfb.c
++++ b/drivers/gpu/drm/vt_drmfb.c
+@@ -71,6 +71,8 @@ vd_setpixel_t		vt_drmfb_setpixel;
+ vd_invalidate_text_t	vt_drmfb_invalidate_text;
+ vd_postswitch_t		vt_drmfb_postswitch;
+ 
++bool vt_drmfb_inherit;
++
+ static struct vt_driver vt_drmfb_driver = {
+ 	.vd_name = "drmfb",
+ 	.vd_init = vt_drmfb_init,
+@@ -375,8 +377,21 @@ vt_drmfb_init(struct vt_device *vd)
+ 		c = bg;
+ 	}
+ 
+-	/* Clear the screen. */
+-	vd->vd_driver->vd_blank(vd, c);
++	/*
++	 * Clear the screen.
++	 *
++	 * NextBSD (E19): not while the platform expert owns the screen in
++	 * graphics mode. There the new framebuffer either already shows the
++	 * boot splash (i915 reusing the firmware framebuffer) or the kernel
++	 * paints it before the first scanout (kPERefreshBootGraphics), and a
++	 * clear here would be the black frame between the firmware's picture
++	 * and ours. Darwin's IOFramebuffer never clears the console when it
++	 * takes over; the console just moves (kPEBaseAddressChange). Verbose,
++	 * single-user and serial boots, and kernels without the platform
++	 * expert, are text mode and keep the clear.
++	 */
++	if (!vt_drmfb_inherit)
++		vd->vd_driver->vd_blank(vd, c);
+ 
+ 	return (CN_INTERNAL);
+ }
+diff --git a/drivers/gpu/drm/vt_drmfb.h b/drivers/gpu/drm/vt_drmfb.h
+index f054883..009d547 100644
+--- a/drivers/gpu/drm/vt_drmfb.h
++++ b/drivers/gpu/drm/vt_drmfb.h
+@@ -41,4 +41,11 @@ void vt_drmfb_resume(struct vt_device *vd);
+ void vt_drmfb_suspend(struct vt_device *vd);
+ int vt_drmfb_detach(struct fb_info *info);
+ 
++/*
++ * NextBSD (E19): set by linux_fb.c around vt_drmfb_attach() while the
++ * platform expert owns the screen in graphics mode, so vt_drmfb_init()
++ * keeps the pixels instead of clearing them.
++ */
++extern bool vt_drmfb_inherit;
++
+ #endif /* _DEV_VT_HW_FB_VT_DRMFB_H_ */

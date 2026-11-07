@@ -241,10 +241,14 @@ const struct drm_driver vc4_drm_driver = {
 	.patchlevel = DRIVER_PATCHLEVEL,
 };
 
+static int vc5_open(struct drm_device *drm, struct drm_file *file);
+
 const struct drm_driver vc5_drm_driver = {
 	.driver_features = (DRIVER_MODESET |
 			    DRIVER_ATOMIC |
 			    DRIVER_GEM),
+	/* DEVIATION (nextbsd-kernel-extensions-graphics#114), see vc5_open(). */
+	.open = vc5_open,
 
 #if defined(CONFIG_DEBUG_FS)
 	.debugfs_init = vc4_debugfs_init,
@@ -355,6 +359,175 @@ module_param(notify_display_done, int, 0644);
 MODULE_PARM_DESC(notify_display_done,
     "Tell the firmware to release the display (default on) (#51)");
 
+/*
+ * DEVIATION (nextbsd-kernel-extensions-graphics#114): defer the display bind.
+ *
+ * Upstream takes the display from the firmware in bind. On the Pi that is
+ * four steps, each of which turns HDMI off or reprograms what the firmware is
+ * scanning out, so the monitor resyncs for 1-3 s in the middle of boot:
+ *
+ *	- NOTIFY_DISPLAY_DONE, which makes the firmware let go of the display;
+ *	- the HVS register init (vc6_hvs_hw_init()), filter kernels and COB;
+ *	- the HDMI block reset in the hand-called runtime resume;
+ *	- vc4_crtc_disable_at_boot(), then the fbdev_dma initial modeset.
+ *
+ * vc4 cannot adopt the firmware's mode, so the Darwin answer -- no modeset
+ * until the window server -- means not touching the display at all until
+ * something wants KMS. Bind now only builds the DRM device: card0 exists, the
+ * IOKit entry is published, connectors are probed through the mailbox, and
+ * the firmware keeps driving the boot console (bcm2835_fbd). The steps above
+ * run, in their original order, from vc5_open() on the first open of card0:
+ * the display server, or anything else that opens it. A getty-only boot
+ * therefore never takes the display.
+ *
+ * This is the same in every boot mode (verbose, single user, serial), which
+ * is simpler than a verbose-only exception and changes nothing a serial
+ * console prints. v3d is a separate driver and device and is unaffected.
+ *
+ * Called with vc4->display_lock held.
+ */
+static int vc4_display_start(struct drm_device *drm)
+{
+	struct vc4_dev *vc4 = to_vc4_dev(drm);
+	struct drm_encoder *encoder;
+	struct drm_crtc *crtc;
+	int ret;
+
+	if (vc4->display_started)
+		return 0;
+
+	if (vc4->firmware) {
+		if (!firmware_kms() && notify_display_done) {
+			ret = rpi_firmware_property(vc4->firmware,
+						    RPI_FIRMWARE_NOTIFY_DISPLAY_DONE,
+						    NULL, 0);
+			if (ret)
+				drm_warn(drm, "Couldn't stop firmware display driver: %d\n", ret);
+		} else if (!firmware_kms()) {
+			drm_info(drm, "NOT sending NOTIFY_DISPLAY_DONE (#51)\n");
+		}
+	}
+
+	/* Component bind order: HVS, then the HDMI encoders, then the CRTCs. */
+	if (vc4->hvs) {
+		ret = vc4_hvs_display_start(vc4->hvs);
+		if (ret)
+			return ret;
+	}
+
+	drm_for_each_encoder(encoder, drm) {
+		enum vc4_encoder_type type = to_vc4_encoder(encoder)->type;
+
+		if (type != VC4_ENCODER_TYPE_HDMI0 &&
+		    type != VC4_ENCODER_TYPE_HDMI1)
+			continue;
+		ret = vc4_hdmi_display_start(encoder);
+		if (ret)
+			return ret;
+	}
+
+	if (!vc4->firmware_kms) {
+		drm_for_each_crtc(crtc, drm)
+			vc4_crtc_disable_at_boot(crtc);
+	}
+
+	vc4->display_started = true;
+	return 0;
+}
+
+/* The fbdev part of the old bind, unchanged. */
+static void vc4_fbdev_start(struct drm_device *drm)
+{
+	if (enable_fbdev) {
+		struct drm_connector_list_iter conn_iter;
+		struct drm_connector *conn;
+
+		drm_fbdev_dma_setup(drm, 16);
+
+		/*
+		 * DEVIATION (#51): probe the connectors explicitly.
+		 *
+		 * Nothing else does. The poll worker only calls detect(), and
+		 * raises a hotplug event on a CHANGE of status -- the status
+		 * here is "connected" from the first probe onwards, so no
+		 * event is ever raised. Measured: vc4_hdmi_read_edid() is
+		 * called over and over by the poll's detect path, while
+		 * vc4_hdmi_connector_get_modes() is never called once.
+		 *
+		 * get_modes() is the only thing that turns an EDID into modes,
+		 * and it runs from drm_helper_probe_single_connector_modes().
+		 * Without this the connector holds a complete EDID -- the
+		 * panel is identified by name -- and still has no modes, so
+		 * the CRTC is never programmed (ACTIVE = 0, MODE_ID = 0).
+		 */
+		mutex_lock(&drm->mode_config.mutex);
+		drm_connector_list_iter_begin(drm, &conn_iter);
+		drm_for_each_connector_iter(conn, &conn_iter)
+			(void)drm_helper_probe_single_connector_modes(conn,
+			    4096, 4096);
+		drm_connector_list_iter_end(&conn_iter);
+		mutex_unlock(&drm->mode_config.mutex);
+
+		/*
+		 * DEVIATION (#51): kick the clients once, after setup.
+		 *
+		 * drm_fbdev_dma_setup() configures from whatever modes the
+		 * connectors have at that instant, and here they have none:
+		 * the first successful EDID read does not happen during bind
+		 * at all, it happens later on the connector poll. Measured --
+		 * no vc4_hdmi_fw_get_edid_block() call appears in the log
+		 * until seconds after the load completes.
+		 *
+		 * By the time the EDID arrives the connector is already
+		 * "connected", so the poll sees no change in status, raises no
+		 * hotplug event, and nothing ever asks fbdev to reconsider.
+		 * The result is a connector with a full EDID and a CRTC that
+		 * was never programmed: ACTIVE = 0, MODE_ID = 0.
+		 *
+		 * One explicit hotplug event makes the client re-probe now
+		 * that the firmware can answer.
+		 */
+		drm_kms_helper_hotplug_event(drm);
+	} else
+		drm_info(drm, "fbdev emulation off by request (#51)\n");
+}
+
+/*
+ * DEVIATION (nextbsd-kernel-extensions-graphics#114): take the display on the
+ * first open. See vc4_display_start().
+ *
+ * The fbdev client opens the device too (drm_client_init() ->
+ * drm_file_alloc() -> .open), so vc4_fbdev_start() runs after the lock is
+ * dropped and that nested open finds display_started already set.
+ */
+static int vc5_open(struct drm_device *drm, struct drm_file *file)
+{
+	struct vc4_dev *vc4 = to_vc4_dev(drm);
+	bool first = false;
+	int ret;
+
+	mutex_lock(&vc4->display_lock);
+	if (vc4->display_started) {
+		mutex_unlock(&vc4->display_lock);
+		return 0;
+	}
+	ret = vc4_display_start(drm);
+	if (ret == 0)
+		first = true;
+	mutex_unlock(&vc4->display_lock);
+
+	if (ret) {
+		drm_err(drm, "Couldn't take the display from the firmware: %d\n",
+		    ret);
+		return ret;
+	}
+
+	if (first)
+		vc4_fbdev_start(drm);
+
+	return 0;
+}
+
 static int vc4_drm_bind(struct device *dev)
 {
 	struct platform_device *pdev = to_platform_device(dev);
@@ -363,7 +536,6 @@ static int vc4_drm_bind(struct device *dev)
 	struct drm_device *drm;
 	struct vc4_dev *vc4;
 	struct device_node *node;
-	struct drm_crtc *crtc;
 	enum vc4_gen gen;
 	int ret = 0;
 
@@ -461,22 +633,17 @@ static int vc4_drm_bind(struct device *dev)
 	 * The reference is deliberately NOT put: the mailbox is needed for as
 	 * long as connectors can be probed, which is the life of the driver.
 	 */
-	if (firmware) {
+	if (firmware)
 		vc4->firmware = firmware;
 
-
-		if (!firmware_kms() && notify_display_done) {
-			ret = rpi_firmware_property(firmware,
-						    RPI_FIRMWARE_NOTIFY_DISPLAY_DONE,
-						    NULL, 0);
-			if (ret)
-				drm_warn(drm, "Couldn't stop firmware display driver: %d\n", ret);
-		} else if (!firmware_kms()) {
-			drm_info(drm, "NOT sending NOTIFY_DISPLAY_DONE (#51)\n");
-		}
-	}
-
-
+	/*
+	 * DEVIATION (nextbsd-kernel-extensions-graphics#114): NOTIFY_DISPLAY_DONE
+	 * is no longer sent here. It moved to vc4_display_start(), with every
+	 * other step that takes the display from the firmware.
+	 */
+	ret = drmm_mutex_init(drm, &vc4->display_lock);
+	if (ret)
+		goto err;
 
 	ret = component_bind_all(dev, drm);
 	if (ret)
@@ -496,67 +663,24 @@ static int vc4_drm_bind(struct device *dev)
 	if (ret < 0)
 		goto err;
 
-	if (!vc4->firmware_kms) {
-		drm_for_each_crtc(crtc, drm)
-			vc4_crtc_disable_at_boot(crtc);
-	}
-
 	ret = drm_dev_register(drm, 0);
 	if (ret < 0)
 		goto err;
 
-	if (enable_fbdev) {
-		struct drm_connector_list_iter conn_iter;
-		struct drm_connector *conn;
-
-		drm_fbdev_dma_setup(drm, 16);
-
-		/*
-		 * DEVIATION (#51): probe the connectors explicitly.
-		 *
-		 * Nothing else does. The poll worker only calls detect(), and
-		 * raises a hotplug event on a CHANGE of status -- the status
-		 * here is "connected" from the first probe onwards, so no
-		 * event is ever raised. Measured: vc4_hdmi_read_edid() is
-		 * called over and over by the poll's detect path, while
-		 * vc4_hdmi_connector_get_modes() is never called once.
-		 *
-		 * get_modes() is the only thing that turns an EDID into modes,
-		 * and it runs from drm_helper_probe_single_connector_modes().
-		 * Without this the connector holds a complete EDID -- the
-		 * panel is identified by name -- and still has no modes, so
-		 * the CRTC is never programmed (ACTIVE = 0, MODE_ID = 0).
-		 */
-		mutex_lock(&drm->mode_config.mutex);
-		drm_connector_list_iter_begin(drm, &conn_iter);
-		drm_for_each_connector_iter(conn, &conn_iter)
-			(void)drm_helper_probe_single_connector_modes(conn,
-			    4096, 4096);
-		drm_connector_list_iter_end(&conn_iter);
-		mutex_unlock(&drm->mode_config.mutex);
-
-		/*
-		 * DEVIATION (#51): kick the clients once, after setup.
-		 *
-		 * drm_fbdev_dma_setup() configures from whatever modes the
-		 * connectors have at that instant, and here they have none:
-		 * the first successful EDID read does not happen during bind
-		 * at all, it happens later on the connector poll. Measured --
-		 * no vc4_hdmi_fw_get_edid_block() call appears in the log
-		 * until seconds after the load completes.
-		 *
-		 * By the time the EDID arrives the connector is already
-		 * "connected", so the poll sees no change in status, raises no
-		 * hotplug event, and nothing ever asks fbdev to reconsider.
-		 * The result is a connector with a full EDID and a CRTC that
-		 * was never programmed: ACTIVE = 0, MODE_ID = 0.
-		 *
-		 * One explicit hotplug event makes the client re-probe now
-		 * that the firmware can answer.
-		 */
-		drm_kms_helper_hotplug_event(drm);
-	} else
-		drm_info(drm, "fbdev emulation off by request (#51)\n");
+	/*
+	 * DEVIATION (nextbsd-kernel-extensions-graphics#114): on vc5/vc6 the
+	 * display is taken on the first open of the DRM device (vc5_open()),
+	 * not here. GEN_4 has its own open hook and no NextBSD user, so it
+	 * still takes the display at bind.
+	 */
+	if (gen == VC4_GEN_4) {
+		mutex_lock(&vc4->display_lock);
+		ret = vc4_display_start(drm);
+		mutex_unlock(&vc4->display_lock);
+		if (ret)
+			goto err;
+		vc4_fbdev_start(drm);
+	}
 
 	return 0;
 

@@ -243,6 +243,15 @@ struct vc4_dev {
 	struct mutex bin_bo_lock;
 	/* Reference count for our binner bo. */
 	struct kref bin_bo_kref;
+
+	/*
+	 * DEVIATION (nextbsd-kernel-extensions-graphics#114): the display is
+	 * taken from the firmware on the first open, not at bind. The lock
+	 * serialises concurrent first opens; display_started is set once the
+	 * hardware has been taken over.
+	 */
+	struct mutex display_lock;
+	bool display_started;
 };
 
 #define to_vc4_dev(_dev)			\
@@ -1081,6 +1090,7 @@ int vc4_gem_madvise_ioctl(struct drm_device *dev, void *data,
 
 /* vc4_hdmi.c */
 extern struct platform_driver vc4_hdmi_driver;
+int vc4_hdmi_display_start(struct drm_encoder *encoder);
 
 /* vc4_vec.c */
 extern struct platform_driver vc4_vec_driver;
@@ -1115,6 +1125,7 @@ void vc4_hvs_dump_state(struct vc4_hvs *hvs);
 void vc4_hvs_unmask_underrun(struct vc4_hvs *hvs, int channel);
 void vc4_hvs_mask_underrun(struct vc4_hvs *hvs, int channel);
 int vc4_hvs_debugfs_init(struct drm_minor *minor);
+int vc4_hvs_display_start(struct vc4_hvs *hvs);
 
 /* vc4_kms.c */
 int vc4_kms_load(struct drm_device *dev);

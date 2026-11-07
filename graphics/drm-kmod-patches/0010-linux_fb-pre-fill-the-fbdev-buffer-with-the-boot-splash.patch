@@ -1,0 +1,126 @@
+linux_fb: pre-fill the fbdev buffer with the boot splash before its first scanout
+
+With patch 0009 the vt(4) switch no longer clears the screen in graphics
+mode, but a driver that allocates a new fbdev buffer (amdgpu, bochs,
+virtio-gpu, vboxvideo, radeon, i915 without a usable BIOS framebuffer)
+would still show that buffer's zeroed contents at the first commit: a
+black frame.
+
+In __register_framebuffer(), while the console is in graphics mode and
+before vt_drmfb_postswitch() queues the first commit:
+
+- if the new buffer is the one already on screen (same physical base and
+  stride as the boot framebuffer, i.e. i915 reusing the firmware
+  framebuffer at the same GGTT offset), leave it alone: it already shows
+  the splash;
+- otherwise send kPERefreshBootGraphics with the new fb_info so the kernel
+  paints the boot graphics into it, the way Darwin's console redraws into
+  the framebuffer IOFramebuffer hands it;
+- for fbdev helpers that draw into a shadow buffer (drm_fbdev_ttm,
+  drm_fbdev_shmem, ...), flush the whole screen synchronously through the
+  helper's fb_dirty, so the pixels reach the scanout buffer before the
+  modeset shows it rather than when the damage worker gets to run.
+
+The op is invoked by name with its value (9) repeated from nextbsd-kernel's
+<sys/pexpert.h>, as in 0009. Text mode (-v, -s, serial, older kernels) runs
+none of this.
+
+Refs nextbsd/nextbsd-kernel-extensions-graphics#111.
+
+diff --git a/drivers/gpu/drm/linux_fb.c b/drivers/gpu/drm/linux_fb.c
+index 939a806..9d39066 100644
+--- a/drivers/gpu/drm/linux_fb.c
++++ b/drivers/gpu/drm/linux_fb.c
+@@ -79,6 +79,7 @@ EVENTHANDLER_DECLARE(pe_console_op, pe_console_op_fn);
+ #define	kPEEnableScreen		6
+ #define	kPEDisableScreen	7
+ #define	kPEBaseAddressChange	8
++#define	kPERefreshBootGraphics	9
+ 
+ static volatile u_int pe_screen_disabled;
+ 
+@@ -129,6 +130,65 @@ pe_screen_enable(struct fb_info *fb)
+ 		pe_console_op_invoke(fb, kPEEnableScreen);
+ }
+ 
++/*
++ * The framebuffer vt(4) is drawing on now, when its softc is known to be a
++ * struct fb_info (the same list as vt_freeze_main_vd()); else NULL. At the
++ * first fbdev registration this is the boot framebuffer (efifb).
++ */
++static struct fb_info *
++vt_main_vd_fb(void)
++{
++	const char *name;
++
++	if (main_vd == NULL || main_vd->vd_driver == NULL ||
++	    main_vd->vd_softc == NULL)
++		return (NULL);
++	name = main_vd->vd_driver->vd_name;
++	if (strcmp(name, "efifb") != 0 && strcmp(name, "vbefb") != 0 &&
++	    strcmp(name, "ofwfb") != 0 && strcmp(name, "fb") != 0 &&
++	    strcmp(name, "drmfb") != 0)
++		return (NULL);
++	return (main_vd->vd_softc);
++}
++
++/*
++ * NextBSD (E19): make the new fbdev buffer show the boot splash from its
++ * first scanout, before vt_drmfb_postswitch() queues the first commit.
++ *
++ * When the new buffer is the one already on screen (i915 reusing the
++ * firmware framebuffer at the same GGTT offset: same physical base, same
++ * stride), it already shows the splash and is left alone. Otherwise the
++ * kernel paints the boot graphics into it (kPERefreshBootGraphics, Darwin's
++ * IOFramebuffer asking the console to redraw into a new framebuffer), and
++ * fbdev helpers that draw into a shadow buffer (drm_fbdev_ttm,
++ * drm_fbdev_shmem, ...) get a synchronous damage flush so the pixels are in
++ * the scanout buffer before the modeset shows it. The deferred damage worker
++ * would run too late.
++ */
++static void
++pe_prefill_fbdev(struct drm_fb_helper *fb_helper,
++    struct linux_fb_info *fb_info)
++{
++	struct fb_info *boot, *fb;
++	struct drm_clip_rect clip;
++
++	fb = &fb_info->fbio;
++	boot = vt_main_vd_fb();
++	if (boot != NULL && boot->fb_pbase != 0 &&
++	    boot->fb_pbase == fb->fb_pbase && boot->fb_stride == fb->fb_stride)
++		return;
++
++	pe_console_op_invoke(fb, kPERefreshBootGraphics);
++
++	if (fb_helper->funcs == NULL || fb_helper->funcs->fb_dirty == NULL)
++		return;
++	clip.x1 = 0;
++	clip.y1 = 0;
++	clip.x2 = fb_info->var.xres;
++	clip.y2 = fb_info->var.yres;
++	(void)fb_helper->funcs->fb_dirty(fb_helper, &clip);
++}
++
+ void
+ vt_freeze_main_vd(struct apertures_struct *a)
+ {
+@@ -304,13 +364,16 @@ __register_framebuffer(struct linux_fb_info *fb_info)
+ 	/*
+ 	 * NextBSD (E19): with the boot splash on screen, the vt(4) backend
+ 	 * switch is a console move, as when Darwin's IOFramebuffer takes the
+-	 * console from the booter's framebuffer: pause the spinner, switch
++	 * console from the booter's framebuffer: pause the spinner, pre-fill
++	 * the new buffer with the splash unless it already shows it, switch
+ 	 * without clearing (vt_drmfb_inherit), point the console at the new
+ 	 * framebuffer, resume. In text mode none of this runs.
+ 	 */
+ 	graphics = pe_console_graphics();
+-	if (graphics)
++	if (graphics) {
+ 		pe_screen_disable(NULL);
++		pe_prefill_fbdev(fb_helper, fb_info);
++	}
+ 	vt_drmfb_inherit = graphics;
+ 	err = vt_drmfb_attach(&fb_info->fbio);
+ 	vt_drmfb_inherit = false;

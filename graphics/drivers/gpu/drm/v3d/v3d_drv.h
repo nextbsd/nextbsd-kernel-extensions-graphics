@@ -24,6 +24,9 @@ struct reset_control;
 
 #define V3D_MAX_QUEUES (V3D_CPU + 1)
 
+/* LOW, MEDIUM and HIGH: enum drm_v3d_priority (NextBSD, apps-windowserver#74). */
+#define V3D_PRIORITY_COUNT (DRM_V3D_PRIORITY_HIGH + 1)
+
 static inline char *v3d_queue_to_string(enum v3d_queue queue)
 {
 	switch (queue) {
@@ -250,11 +253,42 @@ struct v3d_file_priv {
 		struct mutex lock;
 	} perfmon;
 
-	struct drm_sched_entity sched_entity[V3D_MAX_QUEUES];
+	/*
+	 * DEVIATION from the vendored source (nextbsd/apps-windowserver#74):
+	 * one scheduler entity per queue PER PRIORITY, not one per queue.
+	 *
+	 * Upstream binds every fd's entities to DRM_SCHED_PRIORITY_NORMAL for
+	 * good. A drm_sched entity's run-queue is fixed when it is initialized
+	 * with a single scheduler -- drm_sched_entity_set_priority() only takes
+	 * effect through drm_sched_entity_select_rq(), which returns early
+	 * when sched_list is NULL, as it is for num_sched_list == 1 -- so a
+	 * priority change has to move the fd to other entities rather than
+	 * re-prioritize these. All three sets are initialized at open (the
+	 * cost is a few hundred bytes each; none touches a run-queue until it
+	 * gets a job) and v3d_job_init() picks the set for v3d_file_priv.priority.
+	 */
+	struct drm_sched_entity sched_entity[V3D_PRIORITY_COUNT][V3D_MAX_QUEUES];
+
+	/* enum drm_v3d_priority; read locklessly by v3d_job_init(). */
+	u32 priority;
+	/* Serializes DRM_IOCTL_V3D_SET_PRIORITY on this fd. */
+	struct mutex priority_lock;
+	/*
+	 * The opener had CAP_SYS_NICE (root), so the fd may be set to HIGH
+	 * after the process drops privileges. See struct drm_v3d_set_priority.
+	 */
+	bool priority_privileged;
 
 	/* Stores the GPU stats for a specific queue for this fd. */
 	struct v3d_stats stats[V3D_MAX_QUEUES];
 };
+
+/* The entity a new job on @queue from this fd goes to. */
+static inline struct drm_sched_entity *
+v3d_file_entity(struct v3d_file_priv *v3d_priv, enum v3d_queue queue)
+{
+	return &v3d_priv->sched_entity[READ_ONCE(v3d_priv->priority)][queue];
+}
 
 struct v3d_bo {
 	struct drm_gem_shmem_object base;

@@ -1,0 +1,104 @@
+drm_drv: invoke drm_minor_registered/unregistered eventhandlers
+
+Linux libdrm finds DRM devices only through sysfs:
+/sys/dev/char/226:<minor>/device/{subsystem,uevent,drm}. linsysfs
+builds those entries once, at boot, and only for DRM devices under a
+PCI display device, so on the Raspberry Pi 5 -- vc4 (card0) and v3d
+(card1, renderD128) are device-tree platform devices whose kexts kextd
+loads long after linsysfs is initialised -- Linux Mesa under the
+Linuxulator found no GPU and fell back to llvmpipe.
+
+Invoke a drm_minor_registered eventhandler at the end of a successful
+drm_minor_register(), once the minor is visible to lookups, and
+drm_minor_unregistered at the start of drm_minor_unregister(), while
+the minor's name is still valid. Each passes the newbus device the
+driver attached to (dev->dev->bsddev, NULL for a virtual device), the
+minor number (which is also the Linux minor, 226:<minor>), the minor
+type and the minor's name ("card1", "renderD128"). Accel minors use a
+different major and are not sent. The kernel's linsysfs subscribes and
+creates and removes /sys/dev/char/226:<minor>, /sys/class/drm/<name>
+and /sys/devices/platform/<busid> for devices that have no PCI ancestor
+(nextbsd/nextbsd-kernel#248, patch 0102).
+
+drm_minor_register() already sleeps (device_add, xa_store with
+GFP_KERNEL) and is called with at most drm_global_mutex held, a
+sleepable lock, so the subscriber may sleep too.
+
+EVENTHANDLER_INVOKE looks the list up by name at run time, so drm.ko
+links nothing new and the invokes are no-ops on a kernel with no
+subscriber. As in 0007, the declaration is repeated here instead of
+coming from a kernel header; both sides spell out the same signature.
+
+Refs nextbsd/nextbsd-kernel#248.
+
+diff --git a/drivers/gpu/drm/drm_drv.c b/drivers/gpu/drm/drm_drv.c
+index dc1515f..ca60139 100644
+--- a/drivers/gpu/drm/drm_drv.c
++++ b/drivers/gpu/drm/drm_drv.c
+@@ -51,6 +51,38 @@
+ #include "drm_crtc_internal.h"
+ #include "drm_internal.h"
+ 
++#ifdef __FreeBSD__
++#include <sys/eventhandler.h>
++
++/*
++ * NextBSD: each primary and render minor is announced to the
++ * drm_minor_registered and drm_minor_unregistered eventhandlers. linsysfs
++ * subscribes and creates the /sys/dev/char/226:<minor>, /sys/class/drm and
++ * /sys/devices/platform entries Linux libdrm enumerates DRM devices through
++ * (nextbsd/nextbsd-kernel#248). The lists are found by name at run time, so
++ * nothing here links against the kernel side and the invokes are no-ops on a
++ * kernel without a subscriber. The signature is a contract with
++ * sys/compat/linsysfs/linsysfs.c; keep the two identical.
++ *
++ *   dev    the newbus device the driver attached to (dev->dev->bsddev)
++ *   minor  the minor number, which is also the Linux minor (226:<minor>)
++ *   type   enum drm_minor_type (primary or render; accel is not sent)
++ *   name   the minor's name, "card1" or "renderD128"
++ */
++typedef void (*drm_minor_registered_fn)(void *, device_t, int, int,
++    const char *);
++typedef void (*drm_minor_unregistered_fn)(void *, device_t, int, int,
++    const char *);
++EVENTHANDLER_DECLARE(drm_minor_registered, drm_minor_registered_fn);
++EVENTHANDLER_DECLARE(drm_minor_unregistered, drm_minor_unregistered_fn);
++
++static device_t
++drm_minor_bsddev(struct drm_minor *minor)
++{
++	return minor->dev->dev != NULL ? minor->dev->dev->bsddev : NULL;
++}
++#endif
++
+ MODULE_AUTHOR("Gareth Hughes, Leif Delgass, José Fonseca, Jon Smirl");
+ MODULE_DESCRIPTION("DRM shared core routines");
+ MODULE_LICENSE("GPL and additional rights");
+@@ -200,6 +232,13 @@ static int drm_minor_register(struct drm_device *dev, enum drm_minor_type type)
+ 	}
+ 	WARN_ON(entry);
+ 
++#ifdef __FreeBSD__
++	if (minor->type != DRM_MINOR_ACCEL)
++		EVENTHANDLER_INVOKE(drm_minor_registered,
++		    drm_minor_bsddev(minor), minor->index, minor->type,
++		    dev_name(minor->kdev));
++#endif
++
+ 	DRM_DEBUG("new minor registered %d\n", minor->index);
+ 	return 0;
+ 
+@@ -216,6 +255,13 @@ static void drm_minor_unregister(struct drm_device *dev, enum drm_minor_type typ
+ 	if (!minor || !device_is_registered(minor->kdev))
+ 		return;
+ 
++#ifdef __FreeBSD__
++	if (minor->type != DRM_MINOR_ACCEL)
++		EVENTHANDLER_INVOKE(drm_minor_unregistered,
++		    drm_minor_bsddev(minor), minor->index, minor->type,
++		    dev_name(minor->kdev));
++#endif
++
+ 	/* replace @minor with NULL so lookups will fail from now on */
+ 	xa_store(drm_minor_get_xa(type), minor->index, NULL, GFP_KERNEL);
+ 

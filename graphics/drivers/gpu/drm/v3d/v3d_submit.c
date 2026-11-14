@@ -240,7 +240,7 @@ v3d_job_init(struct v3d_dev *v3d, struct drm_file *file_priv,
 	 * What is lost is the attribution of GPU time to a client in fdinfo,
 	 * which nothing on FreeBSD reads. Scheduling itself does not use it.
 	 */
-	ret = drm_sched_job_init(&job->base, &v3d_priv->sched_entity[queue],
+	ret = drm_sched_job_init(&job->base, v3d_file_entity(v3d_priv, queue),
 				 1, v3d_priv);
 	if (ret)
 		return ret;

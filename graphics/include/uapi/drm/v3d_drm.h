@@ -65,6 +65,19 @@ extern "C" {
 #define DRM_IOCTL_V3D_PERFMON_SET_GLOBAL  DRM_IOW(DRM_COMMAND_BASE + DRM_V3D_PERFMON_SET_GLOBAL, \
 						   struct drm_v3d_perfmon_set_global)
 
+/*
+ * NextBSD extension (nextbsd/apps-windowserver#74): GPU scheduling priority.
+ *
+ * Not upstream. The numbers sit well above upstream's: the ioctl at 0x40
+ * (upstream is at 0x0d), the GET_PARAM at 0x100 (upstream is at 16), so a
+ * later upstream addition can never alias them. Mesa carries the same block
+ * (nextbsd-mesa, patches/mesa).
+ */
+#define DRM_V3D_SET_PRIORITY                      0x40
+
+#define DRM_IOCTL_V3D_SET_PRIORITY        DRM_IOW(DRM_COMMAND_BASE + DRM_V3D_SET_PRIORITY, \
+						   struct drm_v3d_set_priority)
+
 #define DRM_V3D_SUBMIT_CL_FLUSH_CACHE             0x01
 #define DRM_V3D_SUBMIT_EXTENSION		  0x02
 
@@ -295,6 +308,15 @@ enum drm_v3d_param {
 	DRM_V3D_PARAM_MAX_PERF_COUNTERS,
 	DRM_V3D_PARAM_SUPPORTS_SUPER_PAGES,
 };
+
+/*
+ * NextBSD extension: the scheduling priorities this fd may set with
+ * DRM_IOCTL_V3D_SET_PRIORITY, as a mask of (1 << enum drm_v3d_priority).
+ * LOW and MEDIUM are always in it; HIGH only when the fd is privileged (see
+ * struct drm_v3d_set_priority). A kernel without the extension fails the
+ * query with EINVAL.
+ */
+#define DRM_V3D_PARAM_ALLOWED_PRIORITIES          0x100
 
 struct drm_v3d_get_param {
 	__u32 param;
@@ -782,6 +804,44 @@ struct drm_v3d_perfmon_get_counter {
 struct drm_v3d_perfmon_set_global {
 	__u32 flags;
 	__u32 id;
+};
+
+/*
+ * NextBSD extension: scheduling priorities. The values match the bits of
+ * DRM_V3D_PARAM_ALLOWED_PRIORITIES and, by design, EGL_IMG_context_priority's
+ * and Gallium's PIPE_CONTEXT_PRIORITY_* bit order (LOW, MEDIUM, HIGH).
+ */
+enum drm_v3d_priority {
+	DRM_V3D_PRIORITY_LOW = 0,
+	DRM_V3D_PRIORITY_MEDIUM = 1,	/* the default */
+	DRM_V3D_PRIORITY_HIGH = 2,
+};
+
+/**
+ * struct drm_v3d_set_priority - NextBSD: set this fd's GPU priority
+ *
+ * Every job submitted on the fd from then on, on every queue (bin, render,
+ * TFU, CSD, cache clean, CPU), is scheduled at @priority: HIGH jobs are
+ * picked before any MEDIUM job waiting for the same queue, MEDIUM before
+ * LOW. There is no preemption: a job already on the hardware finishes first.
+ *
+ * The priority belongs to the fd, not to a GL context, so every context
+ * sharing the fd shares it. Jobs queued at the old priority reach the
+ * hardware before any job at the new one, so the fd's own order on each
+ * queue is kept across a change.
+ *
+ * LOW and MEDIUM may always be set. HIGH needs privilege: the fd must have
+ * been opened by a process with CAP_SYS_NICE (root on FreeBSD:
+ * PRIV_SCHED_SETPRIORITY), or the caller must have it now, or be the
+ * device's current DRM master; otherwise EACCES. The open-time rule is what
+ * lets a compositor that opens its devices as root and then drops privileges
+ * (NextBSD's WindowServer) keep the right, the way it keeps the fd.
+ */
+struct drm_v3d_set_priority {
+	/** enum drm_v3d_priority */
+	__u32 priority;
+	/** Must be zero. */
+	__u32 pad;
 };
 
 #if defined(__cplusplus)

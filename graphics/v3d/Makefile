@@ -34,6 +34,15 @@
 #                     no-huge-pages fallback, so this costs throughput on large
 #                     buffers and not correctness.
 #
+# One NextBSD UAPI extension (nextbsd/apps-windowserver#74): GPU scheduling
+# priority per fd, DRM_IOCTL_V3D_SET_PRIORITY and
+# DRM_V3D_PARAM_ALLOWED_PRIORITIES, numbered clear of upstream's. Each fd gets
+# a drm_sched entity per queue per priority (LOW/NORMAL/HIGH run-queues), and
+# HIGH is for CAP_SYS_NICE (root), DRM master, or an fd root opened -- so
+# WindowServer's composite jobs go ahead of a GPU-bound app's queued work.
+# Mesa's gallium v3d drives it from EGL_IMG_context_priority (nextbsd-mesa).
+# See struct drm_v3d_set_priority in include/uapi/drm/v3d_drm.h.
+#
 .include "../kconfig.mk"
 
 SRCDIR=	${.CURDIR:H}/drivers/gpu/drm/v3d

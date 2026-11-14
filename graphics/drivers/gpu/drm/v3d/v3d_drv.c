@@ -12,6 +12,7 @@
  * shader dispatch).
  */
 
+#include <linux/capability.h>
 #include <linux/clk.h>
 #include <linux/device.h>
 #include <linux/dma-mapping.h>
@@ -23,6 +24,7 @@
 #include <linux/sched/clock.h>
 #include <linux/reset.h>
 
+#include <drm/drm_auth.h>
 #include <drm/drm_drv.h>
 #include <drm/drm_managed.h>
 
@@ -50,6 +52,98 @@ MODULE_PARM_DESC(super_pages, "Enable/Disable Super Pages support.");
 bool debug_mmu;
 module_param(debug_mmu, bool, 0644);
 MODULE_PARM_DESC(debug_mmu, "Enable/Disable MMU error logging");
+
+/*
+ * NextBSD (nextbsd/apps-windowserver#74): fd scheduling priorities.
+ *
+ * The policy is panthor's and amdgpu's: anyone may go down to LOW or stay at
+ * MEDIUM; HIGH, which lets the fd's jobs jump every other client's queued
+ * work, needs CAP_SYS_NICE or DRM master. Plus one rule of our own: an fd
+ * opened with CAP_SYS_NICE keeps the right after its process drops
+ * privileges. NextBSD's WindowServer opens its devices (and Mesa the v3d
+ * render node, inside eglInitialize) as root and only then becomes
+ * _windowserver, which is when it creates its GL context. A render node can
+ * never be DRM master, so without the open-time rule no compositor could
+ * ever get HIGH. It confers nothing the opener could not already do: a
+ * privileged process can pass any fd it likes to anyone it likes.
+ */
+static const enum drm_sched_priority v3d_sched_priority[V3D_PRIORITY_COUNT] = {
+	[DRM_V3D_PRIORITY_LOW] = DRM_SCHED_PRIORITY_LOW,
+	[DRM_V3D_PRIORITY_MEDIUM] = DRM_SCHED_PRIORITY_NORMAL,
+	[DRM_V3D_PRIORITY_HIGH] = DRM_SCHED_PRIORITY_HIGH,
+};
+
+static const char *const v3d_priority_name[V3D_PRIORITY_COUNT] = {
+	[DRM_V3D_PRIORITY_LOW] = "low",
+	[DRM_V3D_PRIORITY_MEDIUM] = "medium",
+	[DRM_V3D_PRIORITY_HIGH] = "high",
+};
+
+static bool
+v3d_priority_permitted(struct drm_file *file, u32 priority)
+{
+	struct v3d_file_priv *v3d_priv = file->driver_priv;
+
+	if (priority <= DRM_V3D_PRIORITY_MEDIUM)
+		return true;
+	return v3d_priv->priority_privileged || capable(CAP_SYS_NICE) ||
+	    drm_is_current_master(file);
+}
+
+static u64
+v3d_allowed_priorities(struct drm_file *file)
+{
+	u64 mask = 0;
+	u32 p;
+
+	for (p = 0; p < V3D_PRIORITY_COUNT; p++)
+		if (v3d_priority_permitted(file, p))
+			mask |= BIT_ULL(p);
+	return mask;
+}
+
+static int v3d_set_priority_ioctl(struct drm_device *dev, void *data,
+				  struct drm_file *file_priv)
+{
+	struct v3d_file_priv *v3d_priv = file_priv->driver_priv;
+	struct drm_v3d_set_priority *args = data;
+	enum v3d_queue q;
+	u32 old;
+
+	if (args->pad != 0 || args->priority >= V3D_PRIORITY_COUNT)
+		return -EINVAL;
+	if (!v3d_priority_permitted(file_priv, args->priority))
+		return -EACCES;
+
+	mutex_lock(&v3d_priv->priority_lock);
+	old = v3d_priv->priority;
+	if (old != args->priority) {
+		WRITE_ONCE(v3d_priv->priority, args->priority);
+		/*
+		 * Keep this fd's order on each queue: let everything it queued
+		 * at the old priority reach the hardware before anything at the
+		 * new one can be picked. hw_jobs_limit is 1, so the order jobs
+		 * are handed to the hardware is the order they run in. Only a
+		 * submit racing this ioctl on another thread can still land in
+		 * the old entity, and two ioctls racing have no order anyway.
+		 */
+		for (q = 0; q < V3D_MAX_QUEUES; q++)
+			drm_sched_entity_flush(&v3d_priv->sched_entity[old][q],
+					       MAX_WAIT_SCHED_ENTITY_Q_EMPTY);
+	}
+	mutex_unlock(&v3d_priv->priority_lock);
+
+	if (old != args->priority) {
+		if (args->priority == DRM_V3D_PRIORITY_HIGH)
+			drm_info(dev, "pid %d (%s): GPU priority high\n",
+				 task_pid_nr(current), current->comm);
+		else
+			drm_dbg(dev, "pid %d (%s): GPU priority %s\n",
+				task_pid_nr(current), current->comm,
+				v3d_priority_name[args->priority]);
+	}
+	return 0;
+}
 
 static int v3d_get_param_ioctl(struct drm_device *dev, void *data,
 			       struct drm_file *file_priv)
@@ -115,6 +209,9 @@ static int v3d_get_param_ioctl(struct drm_device *dev, void *data,
 	case DRM_V3D_PARAM_SUPPORTS_SUPER_PAGES:
 		args->value = !!v3d->gemfs;
 		return 0;
+	case DRM_V3D_PARAM_ALLOWED_PRIORITIES:
+		args->value = v3d_allowed_priorities(file_priv);
+		return 0;
 	default:
 		DRM_DEBUG("Unknown parameter %d\n", args->param);
 		return -EINVAL;
@@ -127,22 +224,30 @@ v3d_open(struct drm_device *dev, struct drm_file *file)
 	struct v3d_dev *v3d = to_v3d_dev(dev);
 	struct v3d_file_priv *v3d_priv;
 	struct drm_gpu_scheduler *sched;
-	int i, ret;
+	int i, p, ret;
 
 	v3d_priv = kzalloc(sizeof(*v3d_priv), GFP_KERNEL);
 	if (!v3d_priv)
 		return -ENOMEM;
 
 	v3d_priv->v3d = v3d;
+	v3d_priv->priority = DRM_V3D_PRIORITY_MEDIUM;
+	mutex_init(&v3d_priv->priority_lock);
+	/* We run in the opener's context: see v3d_priority_permitted(). */
+	v3d_priv->priority_privileged = capable(CAP_SYS_NICE);
+
+	for (p = 0; p < V3D_PRIORITY_COUNT; p++) {
+		for (i = 0; i < V3D_MAX_QUEUES; i++) {
+			sched = &v3d->queue[i].sched;
+			ret = drm_sched_entity_init(&v3d_priv->sched_entity[p][i],
+						    v3d_sched_priority[p], &sched,
+						    1, NULL);
+			if (ret)
+				goto err_sched;
+		}
+	}
 
 	for (i = 0; i < V3D_MAX_QUEUES; i++) {
-		sched = &v3d->queue[i].sched;
-		ret = drm_sched_entity_init(&v3d_priv->sched_entity[i],
-					    DRM_SCHED_PRIORITY_NORMAL, &sched,
-					    1, NULL);
-		if (ret)
-			goto err_sched;
-
 		memset(&v3d_priv->stats[i], 0, sizeof(v3d_priv->stats[i]));
 		seqcount_init(&v3d_priv->stats[i].lock);
 	}
@@ -153,8 +258,14 @@ v3d_open(struct drm_device *dev, struct drm_file *file)
 	return 0;
 
 err_sched:
-	for (i--; i >= 0; i--)
-		drm_sched_entity_destroy(&v3d_priv->sched_entity[i]);
+	for (;;) {
+		for (i--; i >= 0; i--)
+			drm_sched_entity_destroy(&v3d_priv->sched_entity[p][i]);
+		if (--p < 0)
+			break;
+		i = V3D_MAX_QUEUES;
+	}
+	mutex_destroy(&v3d_priv->priority_lock);
 	kfree(v3d_priv);
 	return ret;
 }
@@ -166,21 +277,25 @@ v3d_postclose(struct drm_device *dev, struct drm_file *file)
 	struct v3d_file_priv *v3d_priv = file->driver_priv;
 	unsigned long irqflags;
 	enum v3d_queue q;
+	int p;
 
 	for (q = 0; q < V3D_MAX_QUEUES; q++) {
 		struct v3d_queue_state *queue = &v3d->queue[q];
 		struct v3d_job *job = queue->active_job;
 
-		drm_sched_entity_destroy(&v3d_priv->sched_entity[q]);
+		for (p = 0; p < V3D_PRIORITY_COUNT; p++) {
+			drm_sched_entity_destroy(&v3d_priv->sched_entity[p][q]);
 
-		if (job && job->base.entity == &v3d_priv->sched_entity[q]) {
-			spin_lock_irqsave(&queue->queue_lock, irqflags);
-			job->file_priv = NULL;
-			spin_unlock_irqrestore(&queue->queue_lock, irqflags);
+			if (job && job->base.entity == &v3d_priv->sched_entity[p][q]) {
+				spin_lock_irqsave(&queue->queue_lock, irqflags);
+				job->file_priv = NULL;
+				spin_unlock_irqrestore(&queue->queue_lock, irqflags);
+			}
 		}
 	}
 
 	v3d_perfmon_close_file(v3d_priv);
+	mutex_destroy(&v3d_priv->priority_lock);
 	kfree(v3d_priv);
 }
 
@@ -253,6 +368,8 @@ static const struct drm_ioctl_desc v3d_drm_ioctls[] = {
 	DRM_IOCTL_DEF_DRV(V3D_SUBMIT_CPU, v3d_submit_cpu_ioctl, DRM_RENDER_ALLOW | DRM_AUTH),
 	DRM_IOCTL_DEF_DRV(V3D_PERFMON_GET_COUNTER, v3d_perfmon_get_counter_ioctl, DRM_RENDER_ALLOW),
 	DRM_IOCTL_DEF_DRV(V3D_PERFMON_SET_GLOBAL, v3d_perfmon_set_global_ioctl, DRM_RENDER_ALLOW),
+	/* NextBSD (apps-windowserver#74); the privilege check is in the handler. */
+	DRM_IOCTL_DEF_DRV(V3D_SET_PRIORITY, v3d_set_priority_ioctl, DRM_RENDER_ALLOW),
 };
 
 static const struct drm_driver v3d_drm_driver = {

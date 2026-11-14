@@ -309,72 +309,182 @@ v3d_sysctl_kick(SYSCTL_HANDLER_ARGS)
 }
 
 /*
- * Watchdog for the lost taskqueue wakeup (nextbsd#450).
+ * Watchdog: a safety net for a scheduler that has stopped making progress
+ * (nextbsd#450, nextbsd-kernel-extensions-graphics#124).
  *
- * Measured signature, captured live while wedged:
+ * WHAT IT USED TO DO, AND WHY THAT WAS THE BUG IN #124
  *
- *   q1 render: jobs=80 dep=0 stop=0 credit=0 ready=1 paused=0 runwork=2/1
- *   v3d_render taskqueue thread: IDLE in taskqueue_thread_loop
+ * The first version looked at one 50ms snapshot and repaired whatever looked
+ * wrong in it:
  *
- * runwork=2/1 is WORK_ST_TASK with ta_pending=1 -- drm_sched's submit work is
- * genuinely enqueued and nothing ever dispatches it. It is self-perpetuating
- * because taskqueue_enqueue_locked() only kicks the thread on the 0->1
- * transition:
+ *   case A  run work TASK with ta_pending > 0, twice in a row -> unblock
+ *   case B  an entity whose dependency fence has signalled -> remove the
+ *           entity's callback, clear entity->dependency, put the fence
+ *   case C  run work TASK with ta_pending == 0 and no executor -> enqueue
  *
- *	if (task->ta_pending) { task->ta_pending++; TQ_UNLOCK(queue); return (0); }
+ * Every one of those states is also one the scheduler passes through
+ * legitimately, for a few microseconds, many times a second:
  *
- * so every later queue_work() bumps a counter and wakes nobody. And
- * drm_sched_run_job_work() re-queues itself only while running, so the queue
- * never restarts: one dropped wakeup starves the GPU permanently. Every
- * downstream symptom -- unsignalled fences, X blocked forever in
- * v3d_wait_bo_ioctl or drm_atomic_helper_wait_for_fences, frozen interrupt
- * counters, no drm_sched timeout (it arms only for pending_list jobs, and the
- * job never got that far), and total silence in dmesg -- follows from it.
+ *   B  dma_fence_signal() sets the SIGNALED bit before it runs the callbacks,
+ *      and drm_sched_entity_pop_job() leaves an already-signalled fence in
+ *      entity->dependency for a moment while it moves on to the next one.
+ *   C  between linux_queue_work_on()'s EXEC->TASK transition and its
+ *      taskqueue_enqueue(), and between the taskqueue thread dequeueing the
+ *      task (ta_pending = 0) and linux_work_fn() registering its executor.
+ *   A  two separate enqueue episodes 50ms apart look like one stuck one.
  *
- * taskqueue_unblock() re-issues tq_enqueue() for a non-empty queue, which is
- * exactly the missing wakeup. Verified on the hardware: a single kick drained
- * 1137 render and 1062 bin jobs in four seconds and fired 2195 interrupts.
+ * Instrumented on a Pi 500+ with WindowServer + InnerSpace GL + wsgldemo, with
+ * the repairs switched off: every case B and case C sighting cleared by
+ * itself, without the watchdog, and the queues never stalled. The "lost
+ * callbacks" and "lost hand-offs" it counted were the watchdog sampling those
+ * windows, not bugs in LinuxKPI.
  *
- * This is a recovery mechanism for a kernel-level defect, not a fix for it --
- * the lost wakeup itself still needs finding in the taskqueue dispatch path.
- * It is deliberately loud so it can never rot into silently papering over the
- * bug: every kick is printed and counted, and the count is in dev.v3d.0.state.
+ * For C and A the old repair was harmless (an extra run of an idempotent work
+ * item). For B it was not. entity->dependency and entity->cb are owned by the
+ * scheduler thread and the fence's signal path; rq->lock protects neither. If
+ * the callout read entity->dependency (fence X, signalled) just before
+ * drm_sched_entity_pop_job() moved the entity on to its next dependency Y and
+ * registered entity->cb on Y, then
  *
- * A legitimately queued work item is dispatched in microseconds, so requiring
- * the state to persist across three one-second samples cannot fire on a
- * healthy system.
+ *	dma_fence_remove_callback(X, &ent->cb)
+ *
+ * found the callback non-empty -- it is on Y's list -- and unlinked it from Y's
+ * list while holding X's lock, not Y's; cleared entity->dependency although Y
+ * had NOT signalled, so the job ran before its dependency; and put X a second
+ * time, freeing a scheduler fence that its job still used. Seen on the hardware
+ * as dma_fence_remove_callback() returning true for a signalled fence, which a
+ * correct dma_fence makes impossible unless the callback is on another fence.
+ * Running a v3d job before its dependency, and a use-after-free of a
+ * drm_sched_fence, are exactly the #124 symptoms: the PTB MMU fault, the
+ * wedged GPU, and the spontaneous reboots.
+ *
+ * WHAT IT DOES NOW
+ *
+ * Nothing, unless a queue has demonstrably STOPPED: jobs are waiting in its
+ * run-queues, nothing is on the hardware, and for V3D_WD_STALL_POLLS polls in
+ * a row (500ms -- five orders of magnitude longer than any of the windows
+ * above) neither the queue's emit_seqno nor its waiting-job count has moved.
+ * Only then does it look for one of the three broken states, and the repair for
+ * B is made safe by that freeze: the entity cannot be selected while its
+ * dependency is set, so drm_sched_entity_pop_job() is not running for it, and
+ * the fence lock is held while checking that entity->dependency is still the
+ * signalled fence and that entity->cb is on no list at all. If the callback is
+ * on some list, the state is inconsistent and is reported, never touched.
+ *
+ * A healthy system never trips it, so any kick in dev.v3d.0.state is a real
+ * stall worth reporting. Every repair is printed.
  */
 #define	V3D_WORK_ST_TASK	2	/* enum is private to linux_work.c */
 
-/*
- * Poll interval and strike count.
- *
- * Measured with v3dstress (EGL surfaceless, no X): the lost wakeup fires every
- * 3-4 seconds under load, and every stall lasted 2.4-3.0s -- i.e. exactly the
- * old 3 x 1s detection window. The stall duration was my tuning choice, not a
- * property of the bug.
- *
- * A legitimately queued work item is dispatched in microseconds, so 100ms is
- * still ~4 orders of magnitude of headroom against a false kick. This turns a
- * constant 3-second freeze into a hitch.
- */
 #define	V3D_WD_HZ		20	/* poll every 50ms */
-#define	V3D_WD_STRIKES		2	/* ...so ~100ms to detect */
+#define	V3D_WD_STALL_POLLS	10	/* ...and act after 500ms with no progress */
 
 static struct callout	v3d_wd_callout;
 static struct device   *v3d_wd_dev;
-static int		v3d_wd_strikes[V3D_MAX_QUEUES];
-unsigned long		v3d_wd_kicks;
-unsigned long		v3d_wd_depkicks;
-unsigned long		v3d_wd_wakekicks;
+unsigned long		v3d_wd_kicks;		/* A: queued task not dispatched */
+unsigned long		v3d_wd_depkicks;	/* B: signalled dependency kept */
+unsigned long		v3d_wd_wakekicks;	/* C: TASK with nothing queued */
+
+static struct v3d_wd_queue {
+	u64		emit;		/* emit_seqno at the previous poll */
+	unsigned int	njobs;		/* jobs waiting at the previous poll */
+	int		stalled;	/* consecutive polls without progress */
+} v3d_wd_q[V3D_MAX_QUEUES];
+
+/* Jobs waiting in the queue's run-queues, not yet handed to the hardware. */
+static unsigned int
+v3d_wd_waiting(struct drm_gpu_scheduler *sched)
+{
+	struct drm_sched_entity *ent;
+	unsigned int njobs = 0;
+	int i;
+
+	for (i = 0; i < sched->num_rqs; i++) {
+		struct drm_sched_rq *rq = sched->sched_rq[i];
+
+		if (rq == NULL)
+			continue;
+		spin_lock(&rq->lock);
+		list_for_each_entry(ent, &rq->entities, list)
+			njobs += spsc_queue_count(&ent->job_queue);
+		spin_unlock(&rq->lock);
+	}
+	return (njobs);
+}
+
+/*
+ * Case B, on a frozen queue only: an entity still parked on a dependency that
+ * has signalled. Returns true if it cleared one.
+ */
+static bool
+v3d_wd_clear_signalled_dep(int q, struct drm_gpu_scheduler *sched)
+{
+	struct drm_sched_entity *ent;
+	bool cleared = false;
+	int i;
+
+	for (i = 0; i < sched->num_rqs; i++) {
+		struct drm_sched_rq *rq = sched->sched_rq[i];
+
+		if (rq == NULL)
+			continue;
+		spin_lock(&rq->lock);
+		list_for_each_entry(ent, &rq->entities, list) {
+			struct dma_fence *f = READ_ONCE(ent->dependency);
+			bool clear = false, onlist = false;
+
+			if (f == NULL || !dma_fence_is_signaled(f))
+				continue;
+
+			/*
+			 * Under the fence's own lock: the signal path runs the
+			 * callbacks with it held, so nothing can be half-way
+			 * through calling ours.
+			 */
+			spin_lock(f->lock);
+			if (READ_ONCE(ent->dependency) == f) {
+				onlist = !list_empty(&ent->cb.node);
+				if (!onlist) {
+					WRITE_ONCE(ent->dependency, NULL);
+					clear = true;
+				}
+			}
+			spin_unlock(f->lock);
+
+			if (onlist) {
+				printf("V3DWD: q%d entity parked on signalled "
+				    "%s ctx %llu seqno %llu with its callback "
+				    "on another fence -- inconsistent, not "
+				    "touching it\n", q,
+				    (f->ops != NULL &&
+				     f->ops->get_timeline_name != NULL) ?
+				    f->ops->get_timeline_name(f) : "?",
+				    (unsigned long long)f->context,
+				    (unsigned long long)f->seqno);
+				continue;
+			}
+			if (!clear)
+				continue;
+
+			/* The reference the lost callback would have put. */
+			dma_fence_put(f);
+			v3d_wd_depkicks++;
+			cleared = true;
+			printf("V3DWD: q%d stalled 500ms on an already-signalled "
+			    "dependency -- its callback never ran; cleared "
+			    "(dep kick #%lu)\n", q, v3d_wd_depkicks);
+		}
+		spin_unlock(&rq->lock);
+	}
+	return (cleared);
+}
 
 static void
 v3d_watchdog(void *arg __unused)
 {
 	struct drm_device *drm;
 	struct v3d_dev *v3d;
-	int q, i;
-	bool wake = false;
+	int q;
 
 	if (v3d_wd_dev == NULL)
 		goto rearm;
@@ -385,116 +495,47 @@ v3d_watchdog(void *arg __unused)
 
 	for (q = 0; q < V3D_MAX_QUEUES; q++) {
 		struct v3d_queue_state *qs = &v3d->queue[q];
-		struct workqueue_struct *wq = qs->sched.submit_wq;
+		struct drm_gpu_scheduler *sched = &qs->sched;
+		struct v3d_wd_queue *wq_state = &v3d_wd_q[q];
+		struct workqueue_struct *wq = sched->submit_wq;
+		struct work_struct *w = &sched->work_run_job;
+		unsigned int njobs;
+		u64 emit;
+		bool repaired = false;
+		int state, pending;
+
+		if (!sched->ready || wq == NULL || wq->taskqueue == NULL)
+			continue;
+
+		emit = READ_ONCE(qs->emit_seqno);
+		njobs = v3d_wd_waiting(sched);
 
 		/*
-		 * Case B: an entity parked on a dependency fence that has
-		 * ALREADY SIGNALLED.
-		 *
-		 * When a dependency signals, drm_sched_entity_wakeup() is
-		 * supposed to fire as a dma_fence callback, clear
-		 * entity->dependency and wake the scheduler. Measured on the
-		 * hardware:
-		 *
-		 *   q1 dep fence drm_sched/v3d_bin ctx 58 seqno 15026
-		 *      signalled=1   rq[2]{ents=1 jobs=949 dep=1}
-		 *   q0 (bin): emit=18464 done=18464
-		 *
-		 * The fence fired, every bin job completed, and the render
-		 * entity is still waiting on it with 949 jobs behind. The
-		 * callback was dropped -- the same class of lost notification
-		 * as the taskqueue wakeup below, one layer up.
-		 *
-		 * This needs no heuristic: a signalled fence cannot legally be
-		 * worth waiting on. Remove our callback (so it cannot also fire
-		 * later and double-put), drop the reference the way
-		 * drm_sched_entity_clear_dep() would, and wake the scheduler.
+		 * Progress, or nothing to make progress on, or a job on the
+		 * hardware (that is drm_sched's own timeout's business).
 		 */
-		for (i = 0; i < qs->sched.num_rqs; i++) {
-			struct drm_sched_rq *rq = qs->sched.sched_rq[i];
-			struct drm_sched_entity *ent;
-
-			if (rq == NULL)
-				continue;
-			spin_lock(&rq->lock);
-			list_for_each_entry(ent, &rq->entities, list) {
-				struct dma_fence *f = ent->dependency;
-
-				if (f == NULL || !dma_fence_is_signaled(f))
-					continue;
-				if (dma_fence_remove_callback(f, &ent->cb)) {
-					ent->dependency = NULL;
-					dma_fence_put(f);
-				}
-				v3d_wd_depkicks++;
-				if ((v3d_wd_depkicks % 100) == 1)
-					printf("V3DWD: q%d entity parked on an "
-					    "already-signalled dependency "
-					    "(%s ctx %llu seqno %llu) -- lost "
-					    "callback, waking (dep kick #%lu)\n",
-					    q,
-					    (f->ops != NULL &&
-					     f->ops->get_timeline_name != NULL) ?
-					    f->ops->get_timeline_name(f) : "?",
-					    (unsigned long long)f->context,
-					    (unsigned long long)f->seqno,
-					    v3d_wd_depkicks);
-				wake = true;
-			}
-			spin_unlock(&rq->lock);
+		if (njobs == 0 || emit != wq_state->emit ||
+		    njobs != wq_state->njobs ||
+		    !list_empty(&sched->pending_list) ||
+		    READ_ONCE(sched->pause_submit)) {
+			wq_state->emit = emit;
+			wq_state->njobs = njobs;
+			wq_state->stalled = 0;
+			continue;
 		}
-		if (wake) {
-			drm_sched_wakeup(&qs->sched);
-			wake = false;
-		}
+		if (++wq_state->stalled < V3D_WD_STALL_POLLS)
+			continue;
+		wq_state->stalled = 0;
 
-		/*
-		 * Case C: the submit work claims to be queued (WORK_ST_TASK)
-		 * but ta_pending is 0 -- it is on no taskqueue at all.
-		 *
-		 * Measured on the hardware, persisting for ten minutes:
-		 *
-		 *   q1 emit=89293 done=89293 outstanding=0 pending=empty
-		 *      runwork=2/0  rq[2]{ents=2 jobs=237 dep=0}
-		 *
-		 * This is a permanent trap, not a slow path. Nothing can break
-		 * it from outside:
-		 *
-		 *   - queue_work() reads the state as TASK and returns false
-		 *     without enqueueing ("already on a queue"),
-		 *   - taskqueue_unblock() has no pending task to re-issue,
-		 *   - and the scheduler's timeout never arms, because
-		 *     drm_sched_start_timeout() requires a non-empty
-		 *     pending_list and every job is still stuck in the entity.
-		 *
-		 * It comes from the one path in linux_queue_work_on() that
-		 * sets TASK without enqueueing anything:
-		 *
-		 *	case WORK_ST_EXEC:
-		 *		if (linux_work_exec_unblock(work) != 0)
-		 *			return (true);
-		 *		FALLTHROUGH
-		 *	case WORK_ST_IDLE:
-		 *		taskqueue_enqueue(wq->taskqueue, ...);
-		 *
-		 * That hands off to a linux_work_fn() already running this
-		 * work, which is supposed to see its exec.target cleared and
-		 * run the callback a second time. When that executor does not
-		 * re-run, the work is stranded in TASK forever.
-		 *
-		 * Like case B this needs no heuristic. Walk the workqueue's
-		 * executor list: if nothing is executing this work, then there
-		 * is no one left who could honour the hand-off, and a work in
-		 * TASK with an empty taskqueue provably cannot run again.
-		 * Re-enqueue it -- the state is already exactly what
-		 * queue_work() would have set, so this restores the invariant
-		 * rather than forcing anything.
-		 */
-		if (atomic_read(&qs->sched.work_run_job.state) ==
-		    V3D_WORK_ST_TASK &&
-		    qs->sched.work_run_job.work_task.ta_pending == 0 &&
-		    wq != NULL && wq->taskqueue != NULL) {
-			struct work_struct *w = &qs->sched.work_run_job;
+		/* B: a dependency that signalled without waking the entity. */
+		if (v3d_wd_clear_signalled_dep(q, sched))
+			repaired = true;
+
+		state = atomic_read(&w->state);
+		pending = w->work_task.ta_pending;
+
+		if (state == V3D_WORK_ST_TASK && pending == 0) {
+			/* C: claims to be queued, is on no taskqueue. */
 			struct work_exec *ex;
 			bool executing = false;
 
@@ -509,39 +550,30 @@ v3d_watchdog(void *arg __unused)
 
 			if (!executing) {
 				v3d_wd_wakekicks++;
-				if ((v3d_wd_wakekicks % 100) == 1)
-					printf("V3DWD: q%d submit work stranded "
-					    "in WORK_ST_TASK with an empty "
-					    "taskqueue and no executor -- lost "
-					    "hand-off, re-enqueueing (wake kick "
-					    "#%lu)\n", q, v3d_wd_wakekicks);
-				taskqueue_enqueue(wq->taskqueue,
-				    &w->work_task);
+				printf("V3DWD: q%d stalled 500ms with its submit "
+				    "work in WORK_ST_TASK on no taskqueue and no "
+				    "executor -- re-enqueueing (wake kick #%lu)\n",
+				    q, v3d_wd_wakekicks);
+				taskqueue_enqueue(wq->taskqueue, &w->work_task);
+				repaired = true;
 			}
-		}
-
-		if (atomic_read(&qs->sched.work_run_job.state) !=
-		    V3D_WORK_ST_TASK ||
-		    qs->sched.work_run_job.work_task.ta_pending == 0) {
-			v3d_wd_strikes[q] = 0;
-			continue;
-		}
-
-		if (++v3d_wd_strikes[q] < V3D_WD_STRIKES)
-			continue;
-
-		v3d_wd_kicks++;
-		if ((v3d_wd_kicks % 100) == 1)
-			printf("V3DWD: q%d submit work queued (ta_pending=%d) "
-			    "with an idle taskqueue -- lost wakeup, re-kicking "
-			    "(kick #%lu; further kicks logged every 100)\n",
-			    q, qs->sched.work_run_job.work_task.ta_pending,
-			    v3d_wd_kicks);
-
-		if (wq != NULL && wq->taskqueue != NULL)
+		} else if (state == V3D_WORK_ST_TASK && pending > 0) {
+			/* A: genuinely queued and never dispatched. */
+			v3d_wd_kicks++;
+			printf("V3DWD: q%d stalled 500ms with its submit work "
+			    "queued (ta_pending=%d) and not dispatched -- "
+			    "unblocking the taskqueue (kick #%lu)\n", q,
+			    pending, v3d_wd_kicks);
 			taskqueue_unblock(wq->taskqueue);
+			repaired = true;
+		}
 
-		v3d_wd_strikes[q] = 0;
+		/*
+		 * Anything else is a queue waiting on a dependency that has not
+		 * signalled yet, which is the scheduler working as designed.
+		 */
+		if (repaired)
+			drm_sched_wakeup(sched);
 	}
 
 rearm:
@@ -555,7 +587,7 @@ void
 v3d_watchdog_start(struct device *dev)
 {
 	v3d_wd_dev = dev;
-	memset(v3d_wd_strikes, 0, sizeof(v3d_wd_strikes));
+	memset(v3d_wd_q, 0, sizeof(v3d_wd_q));
 	callout_init(&v3d_wd_callout, 1);
 	callout_reset(&v3d_wd_callout, hz / V3D_WD_HZ, v3d_watchdog, NULL);
 }

@@ -555,6 +555,46 @@ void virtio_gpu_cmd_create_resource(struct virtio_gpu_device *vgdev,
 	bo->created = true;
 }
 
+#ifdef __FreeBSD__
+/*
+ * Base virtio_gpu(4) handed this device over running (vtgpu_handoff(), in
+ * the takeover in virtio_gpu_drm_freebsd.c), so the host went on showing
+ * base's framebuffer -- the boot splash -- until this driver's first
+ * scanout replaced it.  Base's resource is then dropped, and its memory
+ * goes back to base once the host has let go of it.  Without a handoff
+ * vtgpu_handoff_resource() is 0 and nothing is sent.
+ */
+uint32_t vtgpu_handoff_resource(device_t dev);
+void vtgpu_handoff_release(device_t dev);
+
+static void virtio_gpu_bsd_handoff_unref_cb(struct virtio_gpu_device *vgdev,
+					    struct virtio_gpu_vbuffer *vbuf)
+{
+	vtgpu_handoff_release(vgdev->vdev->bsddev);
+}
+
+void virtio_gpu_bsd_handoff_done(struct virtio_gpu_device *vgdev)
+{
+	struct virtio_gpu_resource_unref *cmd_p;
+	struct virtio_gpu_vbuffer *vbuf;
+	uint32_t resid;
+
+	if (vgdev->bsd_handoff_done)
+		return;
+	vgdev->bsd_handoff_done = true;
+	resid = vtgpu_handoff_resource(vgdev->vdev->bsddev);
+	if (resid == 0)
+		return;
+
+	cmd_p = virtio_gpu_alloc_cmd_cb(vgdev, &vbuf, sizeof(*cmd_p),
+					virtio_gpu_bsd_handoff_unref_cb);
+	memset(cmd_p, 0, sizeof(*cmd_p));
+	cmd_p->hdr.type = cpu_to_le32(VIRTIO_GPU_CMD_RESOURCE_UNREF);
+	cmd_p->resource_id = cpu_to_le32(resid);
+	virtio_gpu_queue_ctrl_buffer(vgdev, vbuf);
+}
+#endif
+
 static void virtio_gpu_cmd_unref_cb(struct virtio_gpu_device *vgdev,
 				    struct virtio_gpu_vbuffer *vbuf)
 {

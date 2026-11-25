@@ -189,6 +189,9 @@ static void virtio_gpu_primary_plane_update(struct drm_plane *plane,
 					   plane->state->src_w >> 16,
 					   plane->state->src_h >> 16,
 					   0, 0);
+#ifdef __FreeBSD__
+		virtio_gpu_bsd_handoff_done(vgdev);
+#endif
 		virtio_gpu_notify(vgdev);
 		return;
 	}
@@ -232,6 +235,9 @@ static void virtio_gpu_primary_plane_update(struct drm_plane *plane,
 						   plane->state->src_x >> 16,
 						   plane->state->src_y >> 16);
 		}
+#ifdef __FreeBSD__
+		virtio_gpu_bsd_handoff_done(vgdev);
+#endif
 	}
 
 	virtio_gpu_resource_flush(plane,

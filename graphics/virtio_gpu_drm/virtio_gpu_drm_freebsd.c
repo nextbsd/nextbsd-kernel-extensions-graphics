@@ -74,6 +74,12 @@
 
 #include "virtio_if.h"
 
+/*
+ * Base virtio_gpu(4)'s handoff (nextbsd-kernel patch 0112): keep the device
+ * running across its detach, for this driver to adopt.
+ */
+int		 vtgpu_handoff(device_t dev);
+
 /* Exported by the vendored virtgpu_drv.c under __FreeBSD__. */
 int		 virtio_gpu_bsd_probe(struct virtio_device *vdev);
 void		 virtio_gpu_bsd_remove(struct virtio_device *vdev);
@@ -360,6 +366,19 @@ virtio_gpu_drm_takeover(void *ctx __unused, int pending __unused)
 		 */
 		strlcpy(nameunit, device_get_nameunit(devs[i]),
 		    sizeof(nameunit));
+
+		/*
+		 * Ask base to hand the device over running: then the detach
+		 * doesn't reset it, this driver adopts its features and
+		 * virtqueues, and the host keeps showing base's framebuffer
+		 * (the boot splash) until our first mode replaces it, instead
+		 * of a dark screen in between.  Where base or the transport
+		 * can't, the detach resets the device as it always did.
+		 */
+		error = vtgpu_handoff(devs[i]);
+		printf("virtio_gpu_drm: %s %s\n", nameunit, error == 0 ?
+		    "hands the running device over" :
+		    "can't hand the device over running; resetting it");
 
 		error = device_detach(devs[i]);
 		if (error != 0) {

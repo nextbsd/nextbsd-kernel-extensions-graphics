@@ -255,6 +255,10 @@ struct virtio_gpu_device {
 	bool has_resource_blob;
 	bool has_host_visible;
 	bool has_context_init;
+#ifdef __FreeBSD__
+	/* base virtio_gpu(4)'s resource has been unref'd, see virtgpu_vq.c */
+	bool bsd_handoff_done;
+#endif
 	struct virtio_shm_region host_visible_region;
 	struct drm_mm host_visible_mm;
 
@@ -540,6 +544,11 @@ void virtio_gpu_vram_unmap_dma_buf(struct device *dev,
 /* virtgpu_submit.c */
 int virtio_gpu_execbuffer_ioctl(struct drm_device *dev, void *data,
 				struct drm_file *file);
+
+#ifdef __FreeBSD__
+/* virtgpu_vq.c */
+void virtio_gpu_bsd_handoff_done(struct virtio_gpu_device *vgdev);
+#endif
 
 #ifdef __FreeBSD__
 #include <sys/systm.h>
